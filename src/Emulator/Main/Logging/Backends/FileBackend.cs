@@ -14,7 +14,7 @@ namespace Antmicro.Renode.Logging
 {
     public class FileBackend : TextBackend 
     {
-        public FileBackend(string filePath, bool flushAfterEachWrite = false)
+        public FileBackend(SequencedFilePath filePath, bool flushAfterEachWrite = false)
         {
             var stream = File.Open(filePath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
             output = new StreamWriter(stream);
@@ -63,17 +63,14 @@ namespace Antmicro.Renode.Logging
 
         public override void Flush()
         {
-            if(!Monitor.TryEnter(sync))
+            lock(sync)
             {
-                return;
-            }
-            try
-            {
+                if(isDisposed)
+                {
+                    return;
+                }
+                
                 output.Flush();
-            }
-            finally
-            {
-                Monitor.Exit(sync);
             }
         }
             

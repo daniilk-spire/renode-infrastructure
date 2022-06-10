@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2018 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -54,7 +54,25 @@ namespace Antmicro.Renode.Core
                     currentEmulation.Dispose();
                     currentEmulation = value;
                     InvokeEmulationChanged();
+
+                    if(profilerPathPrefix != null)
+                    {
+                        currentEmulation.MachineAdded += EnableProfilerInMachine;
+                    }
                 }
+            }
+        }
+
+        public void EnableProfilerGlobally(WriteFilePath pathPrefix)
+        {
+            profilerPathPrefix = pathPrefix;
+
+            CurrentEmulation.MachineAdded -= EnableProfilerInMachine;
+            CurrentEmulation.MachineAdded += EnableProfilerInMachine;
+
+            foreach(var machine in CurrentEmulation.Machines)
+            {
+                EnableProfilerInMachine(machine);
             }
         }
 
@@ -66,7 +84,7 @@ namespace Antmicro.Renode.Core
             TypeManager.Instance.GetTypeByName(name);
         }
 
-        public void Load(string path)
+        public void Load(ReadFilePath path)
         {
             using(var stream = new FileStream(path, FileMode.Open, FileAccess.Read))
             {
@@ -164,6 +182,11 @@ namespace Antmicro.Renode.Core
             return timerResult;
         }
 
+        public void EnableCompiledFilesCache(bool value)
+        {
+            CompiledFilesCache.Enabled = value;
+        }
+
         public string VersionString
         {
             get
@@ -182,12 +205,18 @@ namespace Antmicro.Renode.Core
                 );
             }
         }
+        
+        public SimpleFileCache CompiledFilesCache { get; } = new SimpleFileCache("compiler-cache", !Emulator.InCIMode && ConfigurationManager.Instance.Get("general", "compiler-cache-enabled", false));
 
         public event Action EmulationChanged;
 
+        public static bool DisableEmulationFilesCleanup = false;
+
         private EmulationManager()
         {
-            var settings = new Antmicro.Migrant.Customization.Settings(Antmicro.Migrant.Customization.Method.Generated, Antmicro.Migrant.Customization.Method.Generated,
+            var serializerMode = ConfigurationManager.Instance.Get("general", "serialization-mode", Antmicro.Migrant.Customization.Method.Generated);
+            
+            var settings = new Antmicro.Migrant.Customization.Settings(serializerMode, serializerMode,
                 Antmicro.Migrant.Customization.VersionToleranceLevel.AllowGuidChange, disableTypeStamping: true);
             serializer = new Serializer(settings);
             serializer.ForObject<PythonDictionary>().SetSurrogate(x => new PythonDictionarySurrogate(x));
@@ -207,11 +236,18 @@ namespace Antmicro.Renode.Core
             }
         }
 
+        private void EnableProfilerInMachine(Machine machine)
+        {
+            var profilerPath = new SequencedFilePath($"{profilerPathPrefix}-{CurrentEmulation[machine]}");
+            machine.EnableProfiler(profilerPath);
+        }
+
         private int stopwatchCounter;
         private Stopwatch stopwatch;
         private readonly Serializer serializer;
         private Emulation currentEmulation;
         private readonly object currentEmulationLock;
+        private string profilerPathPrefix;
 
         /// <summary>
         /// Represents external world time domain.

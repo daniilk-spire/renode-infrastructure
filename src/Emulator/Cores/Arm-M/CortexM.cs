@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2021 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 // Copyright (c) 2020-2021 Microsoft
 //
@@ -163,8 +163,8 @@ namespace Antmicro.Renode.Peripherals.CPU
                 // stack pointer and program counter are being sent according
                 // to VTOR (vector table offset register)
                 var sysbus = machine.SystemBus;
-                var pc = sysbus.ReadDoubleWord(VectorTableOffset + 4);
-                var sp = sysbus.ReadDoubleWord(VectorTableOffset);
+                var pc = sysbus.ReadDoubleWord(VectorTableOffset + 4, this);
+                var sp = sysbus.ReadDoubleWord(VectorTableOffset, this);
                 if(sysbus.FindMemory(pc, this) == null || (pc == 0 && sp == 0))
                 {
                     this.Log(LogLevel.Error, "PC does not lay in memory or PC and SP are equal to zero. CPU was halted.");
@@ -202,12 +202,9 @@ namespace Antmicro.Renode.Peripherals.CPU
         }
 
         [Export]
-        private void OnPRIMASKWrite(int value)
+        private int FindPendingIRQ()
         {
-            if (nvic != null)
-            {
-                nvic.PRIMASK = (value != 0);
-            }
+            return nvic != null ? nvic.FindPendingInterrupt() : -1;
         }
 
         [Export]

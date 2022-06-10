@@ -4,6 +4,7 @@
 //  This file is licensed under the MIT License.
 //  Full license text is available in 'licenses/MIT.txt'.
 //
+using System;
 using System.Collections.Generic;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure.Registers;
@@ -14,8 +15,7 @@ using Antmicro.Renode.Utilities;
 namespace Antmicro.Renode.Peripherals.UART
 {
     // This model doesn't implement idling, matching, anything that requires more than 8 bit wide data and irDA
-    [AllowedTranslations(AllowedTranslation.ByteToDoubleWord)]
-    public class LowPower_UART : UARTBase, IDoubleWordPeripheral, IKnownSize
+    public class LowPower_UART : UARTBase, IBytePeripheral, IDoubleWordPeripheral, IKnownSize
     {
         public LowPower_UART(Machine machine, long frequency = 8000000) : base(machine)
         {
@@ -258,7 +258,7 @@ namespace Antmicro.Renode.Peripherals.UART
                     .WithReservedBits(11, 5)
                     .WithValueField(16, 2, out receiveWatermark, name: "RXWATER / Receive Watermark")
                     .WithReservedBits(18, 6)
-                    .WithValueField(24, 3, FieldMode.Read, valueProviderCallback: _ => (uint)Count, name: "RXCOUNT / Receive Counter")
+                    .WithValueField(24, 3, FieldMode.Read, valueProviderCallback: _ => (uint)Math.Min(Count, rxMaxBytes), name: "RXCOUNT / Receive Counter")
                     .WithReservedBits(27, 5)
                     .WithWriteCallback((_, __) => UpdateGPIOOutputs())
                 }
@@ -276,6 +276,37 @@ namespace Antmicro.Renode.Peripherals.UART
                 txQueue.Clear();
                 UpdateGPIOOutputs();
                 reset.Value = true;
+            }
+        }
+
+        public byte ReadByte(long offset)
+        {
+            lock(locker)
+            {
+                if((Registers)offset == Registers.Data)
+                {
+                    return (byte)registers.Read(offset);
+                }
+                else
+                {
+                    this.Log(LogLevel.Warning, "Trying to read byte from {0} (0x{0:X}), not supported", (Registers)offset);
+                    return 0;
+                }
+            }
+        }
+
+        public void WriteByte(long offset, byte value)
+        {
+            lock(locker)
+            {
+                if((Registers)offset == Registers.Data)
+                {
+                    registers.Write(offset, value);
+                }
+                else
+                {
+                    this.Log(LogLevel.Warning, "Trying to read byte from {0} (0x{0:X}), not supported", (Registers)offset);
+                }
             }
         }
 
@@ -322,9 +353,7 @@ namespace Antmicro.Renode.Peripherals.UART
 
                 if(Count >= rxMaxBytes)
                 {
-                    receiverOverrun.Value = true;
-                    this.Log(LogLevel.Info, "rxFIFO/Buffer is overflowing. (value: 0x{0:X})", data);
-                    return;
+                    this.Log(LogLevel.Info, "rxFIFO/Buffer is overflowing but we are buffering character", data, rxMaxBytes);
                 }
 
                 base.WriteChar(data);
@@ -384,16 +413,15 @@ namespace Antmicro.Renode.Peripherals.UART
 
         private void UpdateInterrupt()
         {
-            var irqState = false;
+            var rxUnderflow = receiveFifoUnderflowEnabled.Value && receiveFifoUnderflowInterrupt.Value;
+            var txOverflow = transmitFifoOverflowEnabled.Value && transmitFifoOverflowInterrupt.Value;
+            var tx = transmitterInterruptEnabled.Value && transmitDataRegisterEmpty.Value;
+            var rx = receiverInterruptEnabled.Value && (Count > 0);
+            var txComplete = transmissionCompleteInterruptEnabled.Value && (txQueue.Count == 0);
 
-            irqState |= receiveFifoUnderflowEnabled.Value && receiveFifoUnderflowInterrupt.Value;
-            irqState |= transmitFifoOverflowEnabled.Value && transmitFifoOverflowInterrupt.Value;
-            irqState |= transmitterInterruptEnabled.Value && transmitDataRegisterEmpty.Value;
-            irqState |= receiverInterruptEnabled.Value && (Count > 0);
-            irqState |= transmissionCompleteInterruptEnabled.Value && (txQueue.Count == 0);
-
+            var irqState = rxUnderflow || txOverflow || tx || rx || txComplete;
             IRQ.Set(irqState);
-            this.Log(LogLevel.Noisy, "Setting IRQ to {0}", irqState);
+            this.Log(LogLevel.Noisy, "Setting IRQ to {0}, rxUnderflow {1}, txOverflow {2}, tx {3}, rx {4}, txComplete {5}", irqState, rxUnderflow, txOverflow, tx, rx, txComplete);
         }
 
         private void UpdateDMA()

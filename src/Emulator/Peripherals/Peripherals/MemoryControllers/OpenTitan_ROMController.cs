@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2021 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -26,6 +26,7 @@ namespace Antmicro.Renode.Peripherals.MemoryControllers
         {
             this.rom = rom;
             romLengthInWords = (ulong)rom.Size / 4;
+            romIndexWidth = BitHelper.GetMostSignificantSetBitIndex(romLengthInWords - 1) + 1;
             if(romLengthInWords <= 8)
             {
                 throw new ConstructionException("Provided rom's size has to be greater than 8 words (32 bytes)");
@@ -35,11 +36,10 @@ namespace Antmicro.Renode.Peripherals.MemoryControllers
                 throw new ConstructionException("Provided rom's size has to be divisible by word size (4)");
             }
 
-            this.keyLow = keyLow;
-            this.keyHigh = keyHigh;
-            romIndexWidth = BitHelper.GetMostSignificantSetBitIndex(romLengthInWords - 1) + 1;
-            addressKey = nonce >> (64 - romIndexWidth);
-            dataNonce = nonce << romIndexWidth;
+            KeyLow = keyLow;
+            KeyHigh = keyHigh;
+            Nonce = nonce;
+            
             digest = new byte[NumberOfDigestRegisters * 4];
             expectedDigest = new byte[NumberOfDigestRegisters * 4];
             registers = new DoubleWordRegisterCollection(this, BuildRegisterMap());
@@ -76,44 +76,6 @@ namespace Antmicro.Renode.Peripherals.MemoryControllers
             CalculateDigest(digestData);
         }
 
-        public void LoadBinary(string fileName)
-        {
-            var digestData = new ulong[romLengthInWords - 8];
-            try
-            {
-                using(var reader = new FileStream(fileName, FileMode.Open, FileAccess.Read))
-                {
-                    var buffer = new byte[8];
-                    var read = 0;
-                    for(var scrambledIndex = 0UL; scrambledIndex < romLengthInWords; ++scrambledIndex)
-                    {
-                        read = reader.Read(buffer, 0, WordSizeWithECC);
-                        if(read == 0)
-                        {
-                            throw new RecoverableException($"Error while loading file {fileName}: file is too small");
-                        }
-                        if(read != WordSizeWithECC)
-                        {
-                            throw new RecoverableException($"Error while loading file {fileName}: the number of bytes in a file must be a multiple of {WordSizeWithECC}");
-                        }
-
-                        var data = BitConverter.ToUInt64(buffer, 0);
-                        LoadWord(scrambledIndex, data, digestData);
-                    }
-                    read = reader.Read(buffer, 0, buffer.Length);
-                    if(read != 0)
-                    {
-                        throw new RecoverableException($"Error while loading file {fileName}: file is too big");
-                    }
-                }
-            }
-            catch(IOException e)
-            {
-                throw new RecoverableException(string.Format("Exception while loading file {0}: {1}", fileName, e.Message));
-            }
-            CalculateDigest(digestData);
-        }
-
         public void Reset()
         {
             // do not clear ROM
@@ -124,6 +86,19 @@ namespace Antmicro.Renode.Peripherals.MemoryControllers
         public long Size => 0x1000;
 
         public IEnumerable<byte> Digest => digest;
+        
+        public ulong Nonce
+        {
+            set
+            {
+                addressKey = value >> (64 - romIndexWidth);
+                dataNonce = value << romIndexWidth;
+            }
+        }
+
+        public ulong KeyLow { get; set; }
+        
+        public ulong KeyHigh { get; set; }
 
         private Dictionary<long, DoubleWordRegister> BuildRegisterMap()
         {
@@ -174,7 +149,7 @@ namespace Antmicro.Renode.Peripherals.MemoryControllers
 
             // data's width is 32 bits of proper data and 7 bits of ECC
             var dataPresent = PRESENTCipher.Descramble(data, 0, 32 + 7, NumberOfScramblingRounds);
-            var dataPrince = PRINCECipher.Scramble(index | dataNonce, keyLow, keyHigh, rounds: 6);
+            var dataPrince = PRINCECipher.Scramble(index | dataNonce, KeyLow, KeyHigh, rounds: 6);
             var descrabled = (uint)(dataPresent ^ dataPrince);
             if(index < romLengthInWords - 8 && !ECCHsiao.CheckECC(descrabled))
             {
@@ -200,10 +175,8 @@ namespace Antmicro.Renode.Peripherals.MemoryControllers
             integrityError.Value = expectedDigest.Zip(digest, (b0, b1) => b0 != b1).Any(b => b);
         }
 
-        private readonly ulong addressKey;
-        private readonly ulong dataNonce;
-        private readonly ulong keyLow;
-        private readonly ulong keyHigh;
+        private ulong addressKey;
+        private ulong dataNonce;
         private readonly ulong romLengthInWords;
         private readonly int romIndexWidth;
         private readonly MappedMemory rom;
@@ -217,7 +190,6 @@ namespace Antmicro.Renode.Peripherals.MemoryControllers
 
         private const int NumberOfDigestRegisters = 8;
         private const int NumberOfScramblingRounds = 2;
-        private const int WordSizeWithECC = 5;
 
         private class ECCHsiao
         {

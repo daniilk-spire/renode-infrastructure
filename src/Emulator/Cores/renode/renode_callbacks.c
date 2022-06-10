@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2018 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under MIT License.
@@ -9,15 +9,19 @@
 #include <stdlib.h>
 #include "cpu.h"
 #include "renode_imports.h"
+#include "../tlib/unwind.h"
 
 extern CPUState *cpu;
 
-void (*on_translation_block_find_slow)(uint64_t pc);
+typedef void (*translation_block_find_slow_handler)(uint64_t pc);
+translation_block_find_slow_handler on_translation_block_find_slow;
 
 void renode_attach_log_translation_block_fetch(void (handler)(uint64_t))
 {
     on_translation_block_find_slow = handler;
 }
+
+EXC_VOID_1(renode_attach_log_translation_block_fetch, translation_block_find_slow_handler, handler);
 
 void tlib_on_translation_block_find_slow(uint64_t pc)
 {
@@ -37,8 +41,6 @@ EXTERNAL_AS(func_uint32_uint64, ReadDoubleWordFromBus, tlib_read_double_word)
 EXTERNAL_AS(action_uint64_uint32, WriteByteToBus, tlib_write_byte)
 EXTERNAL_AS(action_uint64_uint32, WriteWordToBus, tlib_write_word)
 EXTERNAL_AS(action_uint64_uint32, WriteDoubleWordToBus, tlib_write_double_word)
-
-EXTERNAL_AS(func_int32_uint64, IsIoAccessed, tlib_is_io_accessed)
 
 EXTERNAL_AS(func_uint32_uint64_uint32, OnBlockBegin, tlib_on_block_begin)
 
@@ -69,3 +71,5 @@ EXTERNAL_AS(action_uint64, OnInterruptBegin, tlib_on_interrupt_begin)
 EXTERNAL_AS(action_uint64, OnInterruptEnd, tlib_on_interrupt_end)
 EXTERNAL_AS(action_uint32_uint64, OnMemoryAccess, tlib_on_memory_access)
 EXTERNAL_AS(func_uint32, IsInDebugMode, tlib_is_in_debug_mode)
+EXTERNAL_AS(action_uint64_int32_int32, MmuFaultExternalHandler, tlib_mmu_fault_external_handler)
+EXTERNAL_AS(action_uint64_uint64_uint64_int32, OnStackChange, tlib_profiler_announce_stack_change)

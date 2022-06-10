@@ -41,6 +41,7 @@
     <Reference Include="System.Drawing" />
     <Reference Include="System.Xml" />
     <Reference Include="Microsoft.CSharp" />
+    <Reference Include="System.Numerics" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Peripherals\Timers\EFR32_RTCC.cs" />
@@ -73,6 +74,7 @@
     <Compile Include="Peripherals\Memory\ArrayMemory.cs" />
     <Compile Include="Peripherals\Memory\ArrayMemoryWithReadonlys.cs" />
     <Compile Include="Peripherals\Miscellaneous\EmulatorController.cs" />
+    <Compile Include="Peripherals\Miscellaneous\S32K_SCG.cs" />
     <Compile Include="Peripherals\IRQControllers\PL190.cs" />
     <Compile Include="Peripherals\IRQControllers\SIC.cs" />
     <Compile Include="Peripherals\IRQControllers\EOSS3_IntrCtrl.cs" />
@@ -173,7 +175,6 @@
     <Compile Include="Peripherals\IRQControllers\MSCM.cs" />
     <Compile Include="Peripherals\Miscellaneous\SEMA4.cs" />
     <Compile Include="Peripherals\MTD\FSLNAND.cs" />
-    <Compile Include="Peripherals\UART\PL011.cs" />
     <Compile Include="Peripherals\UART\PULP_STDOUT.cs" />
     <Compile Include="Peripherals\Input\FusionF0710A.cs" />
     <Compile Include="Peripherals\Input\AR1021.cs" />
@@ -186,7 +187,7 @@
     <Compile Include="Peripherals\GPIOPort\STM32F4GPIOPort_old.cs" />
     <Compile Include="Peripherals\GPIOPort\STM32_GPIOPort.cs" />
     <Compile Include="Peripherals\GPIOPort\STM32F1GPIOPort.cs" />
-    <Compile Include="Peripherals\GPIOPort\VybridGPIOPort.cs" />
+    <Compile Include="Peripherals\GPIOPort\NXPGPIOPort.cs" />
     <Compile Include="Peripherals\GPIOPort\XilinxGPIOPS.cs" />
     <Compile Include="Peripherals\USBDeprecated\USBTablet.cs" />
     <Compile Include="Peripherals\GPIOPort\Emios.cs" />
@@ -254,11 +255,11 @@
     <Compile Include="Peripherals\Sensors\SI70xx.cs" />
     <Compile Include="Peripherals\CPU\TranslationCPU.cs" />
     <Compile Include="Peripherals\CPU\TranslationCPU_OpcodesCounting.cs" />
+    <Compile Include="Peripherals\CPU\TranslationCPU_Profiler.cs" />
     <Compile Include="Peripherals\CPU\CpuBitness.cs" />
     <Compile Include="Peripherals\CPU\Disassembler\IDisassembler.cs" />
     <Compile Include="Peripherals\CPU\Disassembler\IDisassemblable.cs" />
     <Compile Include="Peripherals\CPU\Registers\IRegisters.cs" />
-    <Compile Include="Peripherals\CPU\CpuAbortException.cs" />
     <Compile Include="Peripherals\CPU\Registers\RegistersGroup.cs" />
     <Compile Include="Peripherals\UART\SemihostingUart.cs" />
     <Compile Include="..\Cores\Common\RegisterEnumParser.cs">
@@ -390,6 +391,9 @@
     <Compile Include="Peripherals\Miscellaneous\OpenTitan_HMAC.cs" />
     <Compile Include="Peripherals\Miscellaneous\OpenTitan_AES.cs" />
     <Compile Include="Peripherals\Miscellaneous\OpenTitan_KeyManager.cs" />
+    <Compile Include="Peripherals\Miscellaneous\OpenTitan_ResetManager.cs" />
+    <Compile Include="Peripherals\Miscellaneous\OpenTitan_LifeCycleState.cs" />
+    <Compile Include="Peripherals\Miscellaneous\OpenTitan_OneTimeProgrammableMemoryController.cs" />
     <Compile Include="Peripherals\GPIOPort\IMXRT_GPIO.cs" />
     <Compile Include="Peripherals\UART\OpenTitan_UART.cs" />
     <Compile Include="Peripherals\Timers\OpenTitan_Timer.cs" />
@@ -412,6 +416,18 @@
     <Compile Include="Peripherals\SPI\NORFlash\DecodedOperation.cs" />
     <Compile Include="Peripherals\SPI\GigaDevice_GD25LQ.cs" />
     <Compile Include="Peripherals\Miscellaneous\STM32_PWR.cs" />
+    <Compile Include="Peripherals\Timers\S32K_LPIT.cs" />
+    <Compile Include="Peripherals\Timers\S32K_LPTMR.cs" />
+    <Compile Include="Peripherals\UART\TrivialUart.cs" />
+    <Compile Include="Peripherals\Miscellaneous\AthenaX5200.cs" />
+    <Compile Include="Peripherals\UART\PL011.cs" />
+    <Compile Include="Peripherals\Miscellaneous\ExternalWindowMMU.cs" />
+    <Compile Include="Peripherals\Video\MusteinGenericGPU.cs" />
+    <Compile Include="Peripherals\UART\SAMD5_UART.cs" />
+    <Compile Include="Peripherals\Miscellaneous\LiteX_MMCM_CSR32.cs" />
+    <Compile Include="Peripherals\UART\SAMD20_UART.cs" />
+    <Compile Include="Peripherals\Video\LiteX_Framebuffer_CSR32.cs" />
+    <Compile Include="Peripherals\UART\USBSerialPort_S3B.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <ProjectExtensions>

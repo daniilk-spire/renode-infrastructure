@@ -10,9 +10,7 @@ using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure.Registers;
 using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Peripherals.Bus;
-using Antmicro.Renode.Peripherals.CPU;
 using Antmicro.Renode.Peripherals.Timers;
-using Antmicro.Renode.Time;
 
 namespace Antmicro.Renode.Peripherals.IRQControllers
 {
@@ -140,6 +138,11 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
         public long Size => 0x10000;
 
         public IReadOnlyDictionary<int, IGPIO> Connections { get; }
+
+        protected void AddRegister(long offset, DoubleWordRegister register)
+        {
+            registers.AddRegister(offset, register);
+        }
 
         private readonly DoubleWordRegisterCollection registers;
         private readonly Dictionary<int, IGPIO> irqs = new Dictionary<int, IGPIO>();

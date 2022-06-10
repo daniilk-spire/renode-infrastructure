@@ -34,11 +34,8 @@ namespace Antmicro.Renode.Core
 {
     public class Machine : IEmulationElement, IDisposable
     {
-        public Machine()
+        public Machine(bool createLocalTimeSource = false)
         {
-            LocalTimeSource = new SlaveTimeSource();
-            LocalTimeSource.TimePassed += HandleTimeProgress;
-
             InitAtomicMemoryState();
 
             collectionSync = new object();
@@ -57,6 +54,11 @@ namespace Antmicro.Renode.Core
             userState = string.Empty;
             SetLocalName(SystemBus, SystemBusName);
             gdbStubs = new Dictionary<int, GdbStub>();
+
+            if(createLocalTimeSource)
+            {
+                LocalTimeSource = new SlaveTimeSource();
+            }
         }
 
         [PreSerialization]
@@ -381,7 +383,7 @@ namespace Antmicro.Renode.Core
                     this.NoisyLog("Starting {0}.", GetNameForOwnLife(ownLife));
                     ownLife.Start();
                 }
-                LocalTimeSource.Resume();
+                (LocalTimeSource as SlaveTimeSource)?.Resume();
                 this.Log(LogLevel.Info, "Machine started.");
                 state = State.Started;
                 var machineStarted = StateChanged;
@@ -403,7 +405,7 @@ namespace Antmicro.Renode.Core
                 case State.NotStarted:
                     goto case State.Paused;
                 }
-                LocalTimeSource.Pause();
+                (LocalTimeSource as SlaveTimeSource)?.Pause();
                 foreach(var ownLife in ownLifes.OrderBy(x => x is ICPU ? 0 : 1))
                 {
                     var ownLifeName = GetNameForOwnLife(ownLife);
@@ -449,6 +451,24 @@ namespace Antmicro.Renode.Core
             }
         }
 
+        public void RequestResetInSafeState(Action postReset = null, ICollection<IPeripheral> unresetable = null)
+        {
+            Action softwareRequestedReset = null;
+            softwareRequestedReset = () =>
+            {
+                LocalTimeSource.SinksReportedkHook -= softwareRequestedReset;
+                using(ObtainPausedState())
+                {
+                    foreach(var peripheral in registeredPeripherals.Distinct().Where(p => p != this && !(unresetable?.Contains(p) ?? false)))
+                    {
+                        peripheral.Reset();
+                    }
+                }
+                postReset?.Invoke();
+            };
+            LocalTimeSource.SinksReportedkHook += softwareRequestedReset;
+        }
+
         public void RequestReset()
         {
             LocalTimeSource.ExecuteInNearestSyncedState(_ => Reset());
@@ -486,7 +506,7 @@ namespace Antmicro.Renode.Core
                 this.DebugLog("Disposing {0}.", GetAnyNameOrTypeName((IPeripheral)peripheral));
                 peripheral.Dispose();
             }
-            LocalTimeSource.Dispose();
+            (LocalTimeSource as SlaveTimeSource)?.Dispose();
             this.Log(LogLevel.Info, "Disposed.");
             var disposed = StateChanged;
             if(disposed != null)
@@ -565,8 +585,8 @@ namespace Antmicro.Renode.Core
                 x => x.Period.ToString(),
                 x => x.Value.ToString(),
                 x => x.Step.ToString(),
-                x => x.Period == 0 ? "---" : Misc.NormalizeDecimal((ulong)(x.Frequency * x.Step) / x.Period) + "Hz",
-                x => (x.Frequency == 0 || x.Period == 0) ? "---" :  Misc.NormalizeDecimal(1.0 / ((ulong)(x.Frequency * x.Step) / x.Period)) + "s"
+                x => x.Period == 0 ? "---" : Misc.NormalizeDecimal((ulong)(x.Frequency * x.Step) / (double)x.Period) + "Hz",
+                x => (x.Frequency == 0 || x.Period == 0) ? "---" :  Misc.NormalizeDecimal((ulong)x.Period / (x.Frequency * (double)x.Step))  + "s"
             );
             return table.ToArray();
         }
@@ -733,7 +753,7 @@ namespace Antmicro.Renode.Core
         
         public bool HasPlayer => player != null;
 
-        public void PlayFrom(string fileName)
+        public void PlayFrom(ReadFilePath fileName)
         {
             lock(recorderPlayerLock)
             {
@@ -919,7 +939,31 @@ namespace Antmicro.Renode.Core
             }
         }
 
-        public SlaveTimeSource LocalTimeSource { get; private set; }
+        public TimeSourceBase LocalTimeSource
+        {
+            get
+            {
+                return localTimeSource;
+            }
+
+            set
+            {
+                if(localTimeSource != null)
+                {
+                    throw new RecoverableException("Tried to set LocalTimeSource again.");
+                }
+                if(value == null)
+                {
+                    throw new RecoverableException("Tried to set LocalTimeSource to null.");
+                }
+                localTimeSource = value;
+                localTimeSource.TimePassed += HandleTimeProgress;
+                foreach(var timeSink in ownLifes.OfType<ITimeSink>())
+                {
+                    localTimeSource.RegisterSink(timeSink);
+                }
+            }
+        }
 
         public RealTimeClockMode RealTimeClockMode { get; set; }
 
@@ -995,7 +1039,7 @@ namespace Antmicro.Renode.Core
 
                 if(peripheral is ITimeSink timeSink)
                 {
-                    LocalTimeSource.RegisterSink(timeSink);
+                    LocalTimeSource?.RegisterSink(timeSink);
                 }
             }
 
@@ -1234,7 +1278,7 @@ namespace Antmicro.Renode.Core
         {
             lock(pausingSync)
             {
-                LocalTimeSource.Resume();
+                (LocalTimeSource as SlaveTimeSource)?.Resume();
                 foreach(var ownLife in ownLifes.OrderBy(x => x is ICPU ? 1 : 0))
                 {
                     this.NoisyLog("Resuming {0}.", GetNameForOwnLife(ownLife));
@@ -1267,6 +1311,7 @@ namespace Antmicro.Renode.Core
         private Recorder recorder;
         private Player player;
         private DateTime machineStartedAt;
+        private TimeSourceBase localTimeSource;
         private readonly MultiTree<IPeripheral, IRegistrationPoint> registeredPeripherals;
         private readonly Dictionary<IPeripheral, string> localNames;
         private readonly HashSet<IHasOwnLife> ownLifes;

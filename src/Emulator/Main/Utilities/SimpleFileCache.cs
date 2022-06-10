@@ -12,8 +12,9 @@ namespace Antmicro.Renode.Utilities
 {
     public class SimpleFileCache
     {
-        public SimpleFileCache(string location)
+        public SimpleFileCache(string location, bool enabled = true)
         {
+            Enabled = enabled;
             cacheLocation = Path.Combine(Emulator.UserDirectoryPath, location);
 
             internalCache = new HashSet<string>();
@@ -22,12 +23,12 @@ namespace Antmicro.Renode.Utilities
         
         public bool ContainsEntryWithSha(string sha)
         {
-            return !Emulator.InCIMode && internalCache.Contains(sha);
+            return Enabled && internalCache.Contains(sha);
         }
 
         public bool TryGetEntryWithSha(string sha, out string filename)
         {
-            if(Emulator.InCIMode || !ContainsEntryWithSha(sha))
+            if(!Enabled || !ContainsEntryWithSha(sha))
             {
                 filename = null;
                 return false;
@@ -39,26 +40,46 @@ namespace Antmicro.Renode.Utilities
 
         public void StoreEntryWithSha(string sha, string filename)
         {
-            if(Emulator.InCIMode || ContainsEntryWithSha(sha))
+            if(!Enabled || ContainsEntryWithSha(sha))
             {
                 return;
             }
-               
-            FileCopier.Copy(filename, Path.Combine(cacheLocation, sha), true);
-            internalCache.Add(sha);
+
+            EnsureCacheDirectory();
+            using(var locker = new FileLocker(Path.Combine(cacheLocation, lockFileName)))
+            {
+                FileCopier.Copy(filename, Path.Combine(cacheLocation, sha), true);
+                internalCache.Add(sha);
+            }
         }
+
+        public bool Enabled { get; set; }
 
         private void Populate()
         {
-            var dinfo = new DirectoryInfo(cacheLocation);
-            dinfo.Create();
-            foreach(var file in dinfo.EnumerateFiles())
+            if(!Enabled)
             {
-                internalCache.Add(file.Name);
+                return;
             }
+            EnsureCacheDirectory();
+            using(var locker = new FileLocker(Path.Combine(cacheLocation, lockFileName)))
+            {
+                var dinfo = new DirectoryInfo(cacheLocation);
+                foreach(var file in dinfo.EnumerateFiles())
+                {
+                    internalCache.Add(file.Name);
+                }
+            }
+        }
+
+        private void EnsureCacheDirectory()
+        {
+            Directory.CreateDirectory(cacheLocation);
         }
 
         private readonly HashSet<string> internalCache;
         private readonly string cacheLocation;
+
+        private const string lockFileName = ".lock";
     }
 }

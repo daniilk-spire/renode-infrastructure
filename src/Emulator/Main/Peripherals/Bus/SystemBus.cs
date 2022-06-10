@@ -470,7 +470,7 @@ namespace Antmicro.Renode.Peripherals.Bus
             ZeroRange(from.By(size), context);
         }
 
-        public void LoadSymbolsFrom(string fileName, bool useVirtualAddress = false)
+        public void LoadSymbolsFrom(ReadFilePath fileName, bool useVirtualAddress = false)
         {
             using (var elf = GetELFFromFile(fileName))
             {
@@ -488,7 +488,7 @@ namespace Antmicro.Renode.Peripherals.Bus
             pcCache.Invalidate();
         }
 
-        public void LoadELF(string fileName, bool useVirtualAddress = false, bool allowLoadsOnlyToMemory = true, IControllableCPU cpu = null)
+        public void LoadELF(ReadFilePath fileName, bool useVirtualAddress = false, bool allowLoadsOnlyToMemory = true, IControllableCPU cpu = null)
         {
             if(!Machine.IsPaused)
             {
@@ -512,7 +512,7 @@ namespace Antmicro.Renode.Peripherals.Bus
                         s.GetSegmentSize(),
                         loadAddress
                     );
-                    this.WriteBytes(contents, loadAddress, allowLoadsOnlyToMemory);
+                    this.WriteBytes(contents, loadAddress, allowLoadsOnlyToMemory, cpu);
                     UpdateLowestLoadedAddress(loadAddress);
                     this.DebugLog("Segment loaded.");
                 }
@@ -534,17 +534,13 @@ namespace Antmicro.Renode.Peripherals.Bus
             }
         }
 
-        public void LoadUImage(string fileName, IControllableCPU cpu = null)
+        public void LoadUImage(ReadFilePath fileName, IControllableCPU cpu = null)
         {
             if(!Machine.IsPaused)
             {
                 throw new RecoverableException("Cannot load ELF on an unpaused machine.");
             }
             UImage uImage;
-            if(cpu == null)
-            {
-                cpu = (IControllableCPU)GetCPUs().FirstOrDefault();
-            }
             this.DebugLog("Loading uImage {0}.", fileName);
 
             switch(UImageReader.TryLoad(fileName, out uImage))
@@ -564,10 +560,17 @@ namespace Antmicro.Renode.Peripherals.Bus
             case ImageDataResult.UnsupportedCompressionFormat:
                 throw new RecoverableException(string.Format("Unsupported compression format '{0}'.", uImage.Compression));
             }
-            WriteBytes(toLoad, uImage.LoadAddress);
+            WriteBytes(toLoad, uImage.LoadAddress, context: cpu);
             if(cpu != null)
             {
                 cpu.InitFromUImage(uImage);
+            }
+            else
+            {
+                foreach(var c in GetCPUs().Cast<IControllableCPU>())
+                {
+                    c.InitFromUImage(uImage);
+                }
             }
             this.Log(LogLevel.Info, string.Format(
                 "Loaded U-Boot image '{0}'\n" +
@@ -589,7 +592,7 @@ namespace Antmicro.Renode.Peripherals.Bus
             UpdateLowestLoadedAddress(uImage.LoadAddress);
         }
 
-        public void LoadBinary(string fileName, ulong loadPoint)
+        public void LoadBinary(ReadFilePath fileName, ulong loadPoint, ICPU cpu = null)
         {
             const int bufferSize = 100 * 1024;
             this.DebugLog("Loading binary {0} at 0x{1:X}.", fileName, loadPoint);
@@ -602,7 +605,7 @@ namespace Antmicro.Renode.Peripherals.Bus
                     var read = 0;
                     while((read = reader.Read(buffer, 0, buffer.Length)) > 0)
                     {
-                        WriteBytes(buffer, loadPoint + written, read);
+                        WriteBytes(buffer, loadPoint + written, read, context: cpu);
                         written += (ulong)read;
                     }
                 }
@@ -616,17 +619,12 @@ namespace Antmicro.Renode.Peripherals.Bus
             this.DebugLog("Binary loaded.");
         }
 
-        public void LoadHEX(string fileName, IControllableCPU cpu = null)
+        public void LoadHEX(ReadFilePath fileName, IControllableCPU cpu = null)
         {
             string line;
             int lineNum = 1;
             ulong extendedTargetAddress = 0;
             ulong minAddr = ulong.MaxValue;
-
-            if(cpu == null)
-            {
-                cpu = (IControllableCPU)GetCPUs().FirstOrDefault();
-            }
 
             try 
             {
@@ -666,7 +664,7 @@ namespace Antmicro.Renode.Peripherals.Bus
                                         throw new RecoverableException($"Parsing error at line #{lineNum}: {line}. Could not parse bytes");
                                     }
                                 }
-                                WriteBytes(buffer, targetAddr, length);
+                                WriteBytes(buffer, targetAddr, length, context: cpu);
                                 minAddr = Math.Min(minAddr, targetAddr);
                                 this.DebugLog("Writing {0} bytes at 0x{1:X}", length, targetAddr);
                                 break;
@@ -714,7 +712,7 @@ namespace Antmicro.Renode.Peripherals.Bus
             return binaryFingerprints.ToArray();
         }
 
-        public BinaryFingerprint GetFingerprint(string fileName)
+        public BinaryFingerprint GetFingerprint(ReadFilePath fileName)
         {
             return new BinaryFingerprint(fileName);
         }
@@ -1475,7 +1473,7 @@ namespace Antmicro.Renode.Peripherals.Bus
             }
         }
 
-        private static IELF GetELFFromFile(string fileName)
+        private static IELF GetELFFromFile(ReadFilePath fileName)
         {
             try
             {

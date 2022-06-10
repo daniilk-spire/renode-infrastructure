@@ -1,350 +1,391 @@
 //
-// Copyright (c) 2010-2018 Antmicro
-// Copyright (c) 2011-2015 Realtime Embedded
+// Copyright (c) 2010-2022 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
 //
-using System;
 using Antmicro.Renode.Peripherals.Bus;
-using System.Collections.Generic;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Logging;
-using Antmicro.Renode.Peripherals.Miscellaneous;
-using Antmicro.Migrant;
+using Antmicro.Renode.Core.Structure.Registers;
 
 namespace Antmicro.Renode.Peripherals.UART
 {
     [AllowedTranslations(AllowedTranslation.ByteToDoubleWord | AllowedTranslation.WordToDoubleWord)]
-    public class PL011 : IDoubleWordPeripheral, IUART, IKnownSize
+    public class PL011 : UARTBase, IDoubleWordPeripheral, IKnownSize, IProvidesRegisterCollection<DoubleWordRegisterCollection>
     {
-        public PL011(int size = 0x1000)
+        public PL011(Machine machine, uint fifoSize = 1) : base(machine)
         {
-            this.size = size;
+            hardwareFifoSize = fifoSize;
+
             IRQ = new GPIO();
+            interruptRawStatuses = new bool[InterruptsCount];
+            interruptMasks = new bool[InterruptsCount];
+
+            RegistersCollection = new DoubleWordRegisterCollection(this);
+            DefineRegisters();
+
             Reset();
-            idHelper = new PrimeCellIDHelper(size, new byte[] { 0x11, 0x10, 0x14, 0x00, 0x0D, 0xF0, 0x05, 0xB1 }, this);
-        }
-
-        public long Size
-        {
-            get
-            {
-                return size;
-            }
-        }
-
-        public void WriteChar(byte value)
-        {
-            lock(UartLock)
-            {
-                readFifo.Enqueue(value);
-                flags &= ~(uint)Flags.ReceiveFifoEmpty;
-                if(readFifo.Count >= receiveFifoSize)
-                {
-                    flags |= (uint)Flags.ReceiveFifoFull;
-                }
-                if(readFifo.Count >= readFifoTriggerLevel)
-                {
-                    rawInterruptStatus |= (uint)RawInterruptStatus.ReceiveInterruptStatus;
-                    CallInterrupt();
-                }
-            }
-        }
-
-        [field: Transient]
-        public event Action<byte> CharReceived;
-
-        public GPIO IRQ { get; private set; }
-
-        public Bits StopBits { get { return (lineControl & (uint)LineControl.TwoStopBitsSelect) == 0 ? Bits.One : Bits.Two; } }
-
-        public Parity ParityBit
-        {
-            get
-            {
-                var pen = lineControl & (uint)LineControl.ParityEnable;
-                if (pen == 0)
-                {
-                    return Parity.None;
-                }
-                else
-                {
-                    var eps = lineControl & (uint)LineControl.EvenParitySelect;
-                    var sps = lineControl & (uint)LineControl.StickParitySelect;
-
-                    if (eps == 0)
-                    {
-                        return sps == 0 ? Parity.Odd : Parity.Forced1;
-                    }
-                    else
-                    {
-                        return sps == 0 ? Parity.Even : Parity.Forced0;
-                    }
-                }
-            }
-        }
-
-        public uint BaudRate
-        {
-            get
-            {
-                var divisor = (16 * ((integerBaudRate & 0xFFFF) + ((fractionalBaudRate & 0x1F) / 64)));
-                return (divisor > 0) ? (UARTClockFrequency / divisor) : 0;
-            }
-        }
-
-        public void Reset()
-        {
-
-            lock(UartLock)
-            {
-                control = flags = integerBaudRate = fractionalBaudRate = irdaLowPowerCounter = interruptMask = 0;
-                flags |= (uint)Flags.TransmitFifoEmpty;
-                flags |= (uint)Flags.ReceiveFifoEmpty;
-                control |= (uint)Control.TransmitEnable;
-                control |= (uint)Control.ReceiveEnable;
-                readFifo = new Queue<uint>(receiveFifoSize);    // typed chars are stored here
-            }
         }
 
         public uint ReadDoubleWord(long offset)
         {
-            lock(UartLock)
+            lock(innerLock)
             {
-                uint retVal;
-                switch((Register)offset)
-                {
-                case Register.Data:
-                    if(readFifo.Count == 0)
-                    {
-                        flags |= (uint)Flags.ReceiveFifoEmpty;
-                        retVal = 0;
-                    }
-                    else
-                    {
-                        retVal = readFifo.Dequeue();
-                        flags &= ~(uint)Flags.ReceiveFifoFull;
-                        if(readFifo.Count == 0)
-                        {
-                            flags |= (uint)Flags.ReceiveFifoEmpty;
-                        }
-                        else
-                        {
-                            flags &= ~(uint)Flags.ReceiveFifoEmpty;
-                        }
-                    }
+                return RegistersCollection.Read(offset);
+            }
+        }
 
-                    if(readFifo.Count < readFifoTriggerLevel)
-                        rawInterruptStatus &= ~(uint)RawInterruptStatus.ReceiveInterruptStatus;
+        public override void Reset()
+        {
+            base.Reset();
+            lock(innerLock)
+            {
+                RegistersCollection.Reset();
 
-                    CallInterrupt();
-                    return retVal;
-                case Register.ReceiveStatus:
-                    return 0;
-                case Register.Flag:
-                    return flags;
-                case Register.IrDALowPowerCounter:
-                    return irdaLowPowerCounter;
-                case Register.IntegerBaudRate:
-                    return integerBaudRate;
-                case Register.FractionalBaudRate:
-                    return fractionalBaudRate;
-                case Register.LineControl:
-                    return lineControl;
-                case Register.Control:
-                    return control;
-                case Register.InterruptFIFOLevel:
-                    return interruptFIFOLevel;
-                case Register.InterruptMask:
-                    return interruptMask;
-                case Register.RawInterruptStatus:
-                    return rawInterruptStatus;
-                case Register.MaskedInterruptStatus:
-                    return MaskedInterruptStatus;
-                case Register.DMAControl:
-                    return dmaControl;
-                case Register.InterruptClear:
-                    return 0;
-                case Register.UARTPeriphID0:
-                    return 0x11;
-                case Register.UARTPeriphID1:
-                    return 0x10;
-                case Register.UARTPeriphID2:
-                    return 0x14;
-                case Register.UARTPeriphID3:
-                    return 0x00;
-                case Register.UARTPCellID0:
-                    return 0x0D;
-                case Register.UARTPCellID1:
-                    return 0xF0;
-                case Register.UARTPCellID2:
-                    return 0x05;
-                case Register.UARTPCellID3:
-                    return 0xB1;
-                default:
-                    return idHelper.Read(offset);
-                }
+                // receiveFifoSize and receiveInterruptTriggerPoint depend on register values.
+                UpdateReceiveFifoSize();
+                UpdateReceiveInterruptTriggerPoint();
+
+                System.Array.ForEach(interruptRawStatuses, status => status = false);
+                System.Array.ForEach(interruptMasks, mask => mask = false);
+                UpdateInterrupts();
             }
         }
 
         public void WriteDoubleWord(long offset, uint value)
         {
-            lock(UartLock)
+            lock(innerLock)
             {
-                switch((Register)offset)
-                {
-                case Register.Data:
-                    if(!UartEnabled || !TransmitEnabled)
-                    {
-                        break;
-                    }
-                    if (LoopbackTesting)
-                    {
-                        rawInterruptStatus |= (uint)RawInterruptStatus.TransmitInterruptStatus;
-                        CallInterrupt();
-                        break;
-                    }
-                    OnCharReceived((byte)value);
-                    rawInterruptStatus |= (uint)RawInterruptStatus.TransmitInterruptStatus;
-                    CallInterrupt();
+                RegistersCollection.Write(offset, value);
+            }
+        }
 
-                    break;
-                case Register.ReceiveStatus:
-                    break;
-                case Register.Flag:
-                    break;
-                case Register.IrDALowPowerCounter:
-                    irdaLowPowerCounter = value;
-                    break;
-                case Register.IntegerBaudRate:
-                    integerBaudRate = value;
-                    break;
-                case Register.FractionalBaudRate:
-                    fractionalBaudRate = value;
-                    break;
-                case Register.LineControl:
-                    lineControl = value;
-                    break;
-                case Register.Control:
-                    control = value;
-                    break;
-                case Register.InterruptFIFOLevel:
-                    interruptFIFOLevel = value;
-                    break;
-                case Register.InterruptMask:
-                    interruptMask = value;
-                    CallInterrupt();
-                    break;
-                case Register.InterruptClear:
-                    rawInterruptStatus &= ~value;
-                    CallInterrupt();
-                    break;
-                case Register.DMAControl:
-                    dmaControl = value;
-                    break;
-                default:
-                    this.LogUnhandledWrite(offset, value);
-                    break;
+        public override uint BaudRate
+        {
+            get
+            {
+                var divisor = 16 * (integerBaudRate.Value + (fractionalBaudRate.Value / 64));
+                return (divisor > 0) ? (UARTClockFrequency / divisor) : 0;
+            }
+        }
+
+        public GPIO IRQ { get; }
+
+        public override Parity ParityBit
+        {
+            get
+            {
+                if(!parityEnable.Value)
+                {
+                    return Parity.None;
+                }
+                else
+                {
+                    if(!evenParitySelect.Value)
+                    {
+                        return stickParitySelect.Value ? Parity.Forced1 : Parity.Odd;
+                    }
+                    else
+                    {
+                        return stickParitySelect.Value ? Parity.Forced0 : Parity.Even;
+                    }
                 }
             }
         }
 
-        private void OnCharReceived(byte b)
-        {
-            var handler = CharReceived;
-            if(handler != null)
-            {
-                handler(b);
-            }
+        public DoubleWordRegisterCollection RegistersCollection { get; }
 
+        public long Size => 0x1000;
+
+        public override Bits StopBits => twoStopBitsSelect.Value ? Bits.Two : Bits.One;
+
+        protected override void CharWritten()
+        {
+            UpdateInterrupts();
         }
 
-        private void CallInterrupt()
+        protected override bool IsReceiveEnabled
         {
+            get
+            {
+                return AssertFlagEnabled(uartEnable, "Character cannot be received by UART; UARTEN is disabled!")
+                    && AssertFlagEnabled(receiveEnable, "Character cannot be received by UART; RXE is disabled!");
+            }
+        }
+
+        protected override void QueueEmptied()
+        {
+            UpdateInterrupts();
+        }
+
+        private bool AssertFlagEnabled(IFlagRegisterField flag, string errorMessage)
+        {
+            if(!flag.Value)
+            {
+                this.Log(LogLevel.Error, errorMessage);
+                return false;
+            }
+            return true;
+        }
+
+        private void ClearInterrupt(int interrupt)
+        {
+            this.Log(LogLevel.Noisy, "Clearing {0} interrupt.", (Interrupts)interrupt);
+            interruptRawStatuses[interrupt] = false;
+            UpdateInterrupts();
+        }
+
+        private void DefineRegisters()
+        {
+            Registers.Data.Define(this)
+                .WithValueField(0, 8, name: "DATA - Receive (read) / Transmit (write) data character",
+                        valueProviderCallback: _ => ReadDataRegister(),
+                        writeCallback: (_, newValue) => WriteDataRegister(newValue))
+                .WithTaggedFlag("FE - Framing error", 8)
+                .WithTaggedFlag("PE - Parity error", 9)
+                .WithTaggedFlag("BE - Break error", 10)
+                .WithTaggedFlag("OE - Overrun error", 11)
+                .WithReservedBits(12, 4)
+                ;
+
+            Registers.Control.Define(this, 0x300)
+                .WithFlag(0, out uartEnable, name: "UARTEN - UART enable")
+                .WithTaggedFlag("SIREN - SIR enable", 1)
+                .WithTaggedFlag("SIRLP - IrDA SIR low power mode", 2)
+                // These 4 bits can be written/read by software but there's no logic associated.
+                .WithFlags(3, 4, name: "Vendor specific")
+                .WithFlag(7, out loopbackEnable, name: "LBE - Loop back enable")
+                .WithFlag(8, out transmitEnable, name: "TXE - Transmit enable")
+                .WithFlag(9, out receiveEnable, name: "RXE - Receive enable")
+                // No logic needed for DTR/RTS so these are flags just to hush write warnings.
+                .WithFlag(10, name: "DTR - Data transmit ready")
+                .WithFlag(11, name: "RTS - Request to send")
+                .WithTaggedFlag("Out1", 12)
+                .WithTaggedFlag("Out2", 13)
+                .WithTaggedFlag("RTSEn - RTS hardware flow control enable", 14)
+                .WithTaggedFlag("CTSEn - CTS hardware flow control enable", 15)
+                ;
+
+            Registers.Flag.Define(this)  // Doesn't need to have a reset value; it's 0b10010000 nevertheless.
+                .WithTaggedFlag("CTS - Clear to send", 0)
+                .WithTaggedFlag("DSR - Data set ready", 1)
+                .WithTaggedFlag("DCD - Data carrier detect", 2)
+                .WithTaggedFlag("BUSY - UART busy", 3)
+                .WithFlag(4, FieldMode.Read, name: "RXFE - Receive FIFO empty", valueProviderCallback: _ => Count == 0)
+                .WithTaggedFlag("TXFF - Transmit FIFO full", 5)
+                .WithFlag(6, FieldMode.Read, name: "RXFF - Receive FIFO full", valueProviderCallback: _ => Count >= receiveFifoSize)
+                .WithFlag(7, FieldMode.Read, name: "TXFE - Transmit FIFO empty", valueProviderCallback: _ => true)  // Always set.
+                .WithTaggedFlag("RI - Ring indicator", 8)
+                .WithReservedBits(9, 7)
+                ;
+
+            Registers.RawInterruptStatus.Define(this)
+                .WithFlags(0, 11, FieldMode.Read, valueProviderCallback: (interrupt, _) => interruptRawStatuses[interrupt])
+                .WithReservedBits(11, 5)
+                ;
+
+            Registers.LineControl.Define(this)
+                .WithTaggedFlag("BRK - Send break", 0)
+                .WithFlag(1, out parityEnable, name: "PEN - Parity enable")
+                .WithFlag(2, out evenParitySelect, name: "EPS - Even parity select")
+                .WithFlag(3, out twoStopBitsSelect, name: "STP2 - Two stop bits select")
+                .WithFlag(4, out enableFifoBuffers, name: "FEN - Enable FIFOs", changeCallback: (_, __) => UpdateReceiveFifoSize())
+                .WithEnumField(5, 2, out wordLength, name: "WLEN - Word length")
+                .WithFlag(7, out stickParitySelect, name: "SPS - Stick parity select")
+                .WithReservedBits(8, 8)
+                ;
+
+            Registers.IrDALowPowerCounter.Define(this)
+                .WithTag("ILPDVSR - 8-bit low-power divisor value.", 0, 8)
+                .WithReservedBits(8, 24)
+                ;
+
+            Registers.InterruptMask.Define(this)
+                .WithFlags(0, 11, changeCallback: (interrupt, _, newValue) => { interruptMasks[interrupt] = newValue; UpdateInterrupts(); })
+                .WithReservedBits(11, 5)
+                ;
+
+            Registers.IntegerBaudRate.Define(this)
+                .WithValueField(0, 16, out integerBaudRate, name: "BAUD DIVINT - The integer baud rate divisor.")
+                ;
+
+            Registers.FractionalBaudRate.Define(this)
+                .WithValueField(0, 6, out fractionalBaudRate, name: "BAUD DIVFRAC - The fractional baud rate divisor")
+                .WithReservedBits(6, 10)
+                ;
+
+            Registers.DMAControl.Define(this)
+                .WithTaggedFlag("RXDMAE - Receive DMA enable", 0)
+                .WithTaggedFlag("TXDMAE - Transmit DMA enable", 1)
+                .WithTaggedFlag("DMAONERR - DMA on error", 2)
+                .WithReservedBits(3, 13)
+                ;
+
+            Registers.InterruptFIFOLevel.Define(this, 0b010010)  // The reset value is 2 for both fields.
+                .WithValueField(0, 3, name: "TXIFLSEL - Transmit interrupt FIFO level select")  // Hush write warnings. Transmit interrupts are never triggered.
+                .WithValueField(3, 3, out receiveInterruptFifoLevelSelect, name: "RXIFLSEL - Receive interrupt FIFO level select",
+                        changeCallback: (_, __) => UpdateReceiveInterruptTriggerPoint())
+                .WithReservedBits(6, 10)
+                ;
+
+            Registers.InterruptClear.Define(this)
+                .WithFlags(0, 11, FieldMode.Write, writeCallback: (interrupt, _, newValue) => { if(newValue) ClearInterrupt(interrupt); })
+                .WithReservedBits(11, 5)
+                ;
+
+            // Any write to this 8-bit register should clear all the errors if they're ever set.
+            Registers.ReceiveStatus.Define(this)
+                .WithFlag(0, name: "FE - Framing error", valueProviderCallback: _ => false)
+                .WithFlag(1, name: "PE - Parity error", valueProviderCallback: _ => false)
+                .WithFlag(2, name: "BE - Break error", valueProviderCallback: _ => false)
+                .WithFlag(3, name: "OE - Overrun error", valueProviderCallback: _ => false)
+                .WithFlags(4, 4, FieldMode.Write)
+                ;
+
+            Registers.MaskedInterruptStatus.Define(this)
+                .WithValueField(0, 11, FieldMode.Read, name: "Masked interrupt status", valueProviderCallback: _ => MaskedInterruptStatus)
+                .WithReservedBits(11, 5)
+                ;
+
+            Registers.UARTPeriphID0.DefineMany(this, 4, (register, idx) =>
+            {
+                register.WithValueField(0, 8, FieldMode.Read, valueProviderCallback: _ => peripheralID[idx])
+                    .WithReservedBits(8, 8);
+            }, name: "Peripheral identification registers n");
+
+            Registers.UARTPCellID0.DefineMany(this, 4, (register, idx) =>
+            {
+                register.WithValueField(0, 8, FieldMode.Read, valueProviderCallback: _ => primeCellID[idx])
+                    .WithReservedBits(8, 8);
+            }, name: "PrimeCell identification registers n");
+        }
+
+        private byte ReadDataRegister()
+        {
+            // DATA register can be read to check errors so reading from an empty queue isn't a problem.
+            if(TryGetCharacter(out byte character))
+            {
+                WarnIfWordLengthIncorrect();
+                UpdateInterrupts();
+            }
+            return character;
+        }
+
+        private void UpdateReceiveInterruptTriggerPoint()
+        {
+            var levelSelect = receiveInterruptFifoLevelSelect.Value;
+            switch(levelSelect)
+            {
+                case 0b000: receiveInterruptTriggerPoint = 1d / 8d * receiveFifoSize; break;
+                case 0b001: receiveInterruptTriggerPoint = 1d / 4d * receiveFifoSize; break;
+                case 0b010: receiveInterruptTriggerPoint = 1d / 2d * receiveFifoSize; break;
+                case 0b011: receiveInterruptTriggerPoint = 3d / 4d * receiveFifoSize; break;
+                case 0b100: receiveInterruptTriggerPoint = 7d / 8d * receiveFifoSize; break;
+                default:
+                    this.Log(LogLevel.Warning, "Receive interrupt FIFO level select written with invalid value: {0}", levelSelect);
+                    return;
+            }
+            this.Log(LogLevel.Debug, "Receive Interrupt Trigger Point set to: {0} (level select = {1}; fifo size = {2}{3})",
+                receiveInterruptTriggerPoint, levelSelect, receiveFifoSize, enableFifoBuffers.Value ? "" : " (FIFO buffers disabled)");
+
+            UpdateInterrupts();
+        }
+
+        private void UpdateInterrupts()
+        {
+            interruptRawStatuses[(int)Interrupts.Receive] = Count >= receiveInterruptTriggerPoint;
             IRQ.Set(MaskedInterruptStatus != 0);
         }
 
-        private uint MaskedInterruptStatus
+        private void UpdateReceiveFifoSize()
         {
-            get { return rawInterruptStatus & interruptMask; }
+            if(enableFifoBuffers.Value)
+            {
+                receiveFifoSize = hardwareFifoSize;
+                this.Log(LogLevel.Debug, "FIFO buffers enabled.");
+            }
+            else
+            {
+                receiveFifoSize = 1;
+                this.Log(LogLevel.Debug, "FIFO buffers disabled.");
+            }
+            UpdateReceiveInterruptTriggerPoint();
         }
 
-        private bool ReadFifoEmpty
+        private void WarnIfWordLengthIncorrect()
         {
-            get { return  (flags & (uint)1u << 4) != 0; }
+            if(wordLength.Value != WordLength.EightBits && wordLength.Value != WordLength.SevenBits)
+            {
+                this.Log(LogLevel.Warning, "DATA read or written while {0}-bit word length is set (WLEN={1}). Only 7-bit and 8-bit words are fully supported.",
+                    wordLength.Value == WordLength.FiveBits ? "5" : "6", (uint)wordLength.Value);
+            }
         }
 
-        private bool ReadFifoFull
+        private void WriteDataRegister(uint value)
         {
-            get { return  (flags & (uint)1u << 6) != 0; }
+            if(!AssertFlagEnabled(uartEnable, "DATA register cannot be written to; UARTEN is disabled!")
+                || !AssertFlagEnabled(transmitEnable, "DATA register cannot be written to; TXE is disabled!"))
+            {
+                return;
+            }
+            WarnIfWordLengthIncorrect();
+
+            if(!loopbackEnable.Value)
+            {
+                TransmitCharacter((byte)value);
+            }
+            interruptRawStatuses[(int)Interrupts.Transmit] = true;
+            UpdateInterrupts();
         }
 
-        private bool WriteFifoEmpty
-        {
-            get { return  (flags & (uint)1u << 7) != 0; }
-        }
+        private uint InterruptMask => Renode.Utilities.BitHelper.GetValueFromBitsArray(interruptMasks);
 
-        private bool WriteFifoFull
-        {
-            get { return  (flags & (uint)1u << 5) != 0; }
-        }
+        private uint MaskedInterruptStatus => RawInterruptStatus & InterruptMask;
 
-        private bool ReceiveInterrupt
-        {
-            get { return (rawInterruptStatus & (uint)1u << 4) != 0; }
-        }
+        private uint RawInterruptStatus => Renode.Utilities.BitHelper.GetValueFromBitsArray(interruptRawStatuses);
 
-        private bool TransmitInterrupt
-        {
-            get { return (rawInterruptStatus & (uint)1u << 5) != 0; }
-        }
+        private IFlagRegisterField enableFifoBuffers;
+        private IFlagRegisterField evenParitySelect;
+        private IValueRegisterField fractionalBaudRate;
+        private IValueRegisterField integerBaudRate;
+        private IFlagRegisterField loopbackEnable;
+        private IFlagRegisterField parityEnable;
+        private IFlagRegisterField receiveEnable;
+        private IValueRegisterField receiveInterruptFifoLevelSelect;
+        private IFlagRegisterField stickParitySelect;
+        private IFlagRegisterField transmitEnable;
+        private IFlagRegisterField twoStopBitsSelect;
+        private IFlagRegisterField uartEnable;
+        private IEnumRegisterField<WordLength> wordLength;
 
-        private bool TransmitEnabled
-        {
-            get { return (control & (uint)1u << 8) != 0; }
-        }
+        private readonly uint hardwareFifoSize;
+        private readonly bool[] interruptMasks;
+        private readonly bool[] interruptRawStatuses;
+        private readonly uint[] peripheralID = { 0x11, 0x10, 0x34, 0x0 };
+        private readonly uint[] primeCellID = { 0x0D, 0xF0, 0x05, 0xB1 };
+        private uint receiveFifoSize;
+        private double receiveInterruptTriggerPoint;
 
-        private bool ReceiveEnabled
-        {
-            get { return (control & (uint)1u << 9) != 0; }
-        }
-
-        private bool UartEnabled
-        {
-            get { return (control & (uint)1u) != 0; }
-        }
-
-        private bool LoopbackTesting
-        {
-            get { return (control & (uint)1u << 7) != 0; }
-        }
-
-        private object UartLock = new object();
+        private const uint InterruptsCount = 11;
         private const uint UARTClockFrequency = 24000000;
-        private Queue<uint> readFifo;
-        private const int transmitFifoSize = 16;
-        private const int receiveFifoSize = 16;
-        private const int readFifoTriggerLevel = 1;
-        private uint flags;
-        private uint lineControl;
-        private uint control;
-        private uint dmaControl;
-        private uint interruptMask;
-        private uint rawInterruptStatus;
-        private uint irdaLowPowerCounter;
-        private uint integerBaudRate;
-        private uint fractionalBaudRate;
-        private uint interruptFIFOLevel;
 
-        private readonly int size;
-        private readonly PrimeCellIDHelper idHelper;
+        private enum Interrupts
+        {
+            ModemRingIndicator,
+            ModemClearToSend,
+            ModemDataCarrierDetect,
+            ModemDataSetReady,
+            Receive,
+            Transmit,
+            ReceiveTimeout,
+            FramingError,
+            ParityError,
+            BreakError,
+            OverrunError,
+        }
 
-        private const uint UartEnable = 0x0001;
-        private const uint LoopbackEnable = 0x0080;
-        private const uint TxEnable = 0x0100;
-
-        private enum Register
+        private enum Registers : long
         {
             Data                            = 0x000,
             ReceiveStatus                   = 0x004, //aka ErrorClear
@@ -360,7 +401,6 @@ namespace Antmicro.Renode.Peripherals.UART
             MaskedInterruptStatus           = 0x040,
             InterruptClear                  = 0x044,
             DMAControl                      = 0x048,
-
             UARTPeriphID0                   = 0xFE0,
             UARTPeriphID1                   = 0xFE4,
             UARTPeriphID2                   = 0xFE8,
@@ -371,34 +411,13 @@ namespace Antmicro.Renode.Peripherals.UART
             UARTPCellID3                    = 0xFFC
         }
 
-        [Flags]
-        private enum LineControl : uint
+        private enum WordLength
         {
-            TwoStopBitsSelect = 1u << 3,
-            ParityEnable = 1u << 1,
-            EvenParitySelect = 1u << 2,
-            StickParitySelect = 1u << 7
+            FiveBits,
+            SixBits,
+            SevenBits,
+            EightBits,
         }
-        [Flags]
-        private enum Flags : uint
-        {
-            TransmitFifoEmpty = 1u << 7,
-            ReceiveFifoEmpty = 1u << 4,
-            ReceiveFifoFull = 1u << 6
-        }
-        [Flags]
-        private enum Control : uint
-        {
-            TransmitEnable = 1u << 8,
-            ReceiveEnable = 1u << 9
-        }
-        [Flags]
-        private enum RawInterruptStatus : uint
-        {
-            ReceiveInterruptStatus = 1u << 4,
-            TransmitInterruptStatus = 1u << 5
-        }
-
     }
 }
 

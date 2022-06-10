@@ -261,23 +261,23 @@ namespace Antmicro.Renode.UserInterface
             string machineName;
             if(EmulationManager.Instance.CurrentEmulation.TryGetMachineName(machine, out machineName))
             {
+                var activeMachine = _currentMachine;
+                _currentMachine = machine;
                 var macroName = GetVariableName("reset");
                 Token resetMacro;
                 if(macros.TryGetValue(macroName, out resetMacro))
                 {
-                    var activeMachine = _currentMachine;
-                    _currentMachine = machine;
                     var macroLines = resetMacro.GetObjectValue().ToString().Split('\n');
                     foreach(var line in macroLines)
                     {
                         Parse(line, Interaction);
                     }
-                    _currentMachine = activeMachine;
                 }
                 else
                 {
                     Logger.LogAs(this, LogLevel.Warning, "No action for reset - macro {0} is not registered.", macroName);
                 }
+                _currentMachine = activeMachine;
             }
         }
 
@@ -555,11 +555,11 @@ namespace Antmicro.Renode.UserInterface
 
             try
             {
-                if(!compiledFileCache.TryGetEntryWithSha(sha, out var compiledCode))
+                if(!EmulationManager.Instance.CompiledFilesCache.TryGetEntryWithSha(sha, out var compiledCode))
                 {
                     var compiler = new AdHocCompiler();
                     compiledCode = compiler.Compile(filename);
-                    compiledFileCache.StoreEntryWithSha(sha, compiledCode);
+                    EmulationManager.Instance.CompiledFilesCache.StoreEntryWithSha(sha, compiledCode);
                 }
                 
                 cache.ClearCache();
@@ -579,7 +579,6 @@ namespace Antmicro.Renode.UserInterface
             }
         }
 
-        private SimpleFileCache compiledFileCache = new SimpleFileCache("compiler-cache");
         private List<string> scannedFilesCache = new List<string>();
 
         public bool TryExecuteScript(string filename, ICommandInteraction writer = null)

@@ -1,17 +1,19 @@
 //
-// Copyright (c) 2010-2018 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
 //
 using System;
+using System.Linq;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using Antmicro.Renode.UserInterface;
 using Antmicro.Renode.Logging;
+using Antmicro.Renode.Utilities;
 
 namespace Antmicro.Renode.Peripherals.GPIOPort
 {
@@ -76,6 +78,7 @@ namespace Antmicro.Renode.Peripherals.GPIOPort
         protected BaseGPIOPort(Machine machine, int numberOfConnections)
         {
             var innerConnections = new Dictionary<int, IGPIO>();
+            this.NumberOfConnections = numberOfConnections;
             State = new bool[numberOfConnections];
             for(var i = 0; i < numberOfConnections; i++)
             {
@@ -104,11 +107,16 @@ namespace Antmicro.Renode.Peripherals.GPIOPort
             }
         }
 
+        protected uint GetSetConnectionBits()
+        {
+            return BitHelper.GetValueFromBitsArray(Connections.Where(x => x.Key >= 0).OrderBy(x => x.Key).Select(x => x.Value.IsSet));
+        }
+
         protected bool CheckPinNumber(int number)
         {
-            if(number < 0 || number >= State.Length)
+            if(number < 0 || number >= NumberOfConnections)
             {
-                this.Log(LogLevel.Error, $"This peripheral supports gpio inputs from 0 to {State.Length - 1}, but {number} was called.");
+                this.Log(LogLevel.Error, $"This peripheral supports gpio inputs from 0 to {NumberOfConnections}, but {number} was called.");
                 return false;
             }
             return true;
@@ -126,8 +134,9 @@ namespace Antmicro.Renode.Peripherals.GPIOPort
             State[number] = value;
         }
 
-        public IReadOnlyDictionary<int, IGPIO> Connections { get; private set; }
+        public IReadOnlyDictionary<int, IGPIO> Connections { get; }
 
+        protected readonly int NumberOfConnections;
         protected bool[] State;
         protected readonly Machine machine;
     }

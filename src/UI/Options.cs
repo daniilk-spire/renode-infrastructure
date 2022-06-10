@@ -52,17 +52,14 @@ namespace Antmicro.Renode.UI
         [Name("console"), Description("Run monitor in the console instead of a separate window")]
         public bool Console { get; set; }
 
+        [Name("keep-temporary-files"), Description("Don't clean temporary files on exit")]
+        public bool KeepTemporaryFiles { get; set; }
+
         public bool Validate(out string error)
         {
             if(HideMonitor && Console)
             {
                 error = "--hide-monitor and --console cannot be set at the same time";
-                return false;
-            }
-
-            if(!string.IsNullOrEmpty(ScriptPath) && Execute?.Length > 0)
-            {
-                error = "Script path and execute command cannot be set at the same time";
                 return false;
             }
 

@@ -3,7 +3,7 @@
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
-// 
+//
 using System;
 using System.Text;
 using System.Linq;
@@ -16,7 +16,10 @@ using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Utilities;
+using Antmicro.Renode.Peripherals;
 using Antmicro.Renode.Peripherals.CPU.Disassembler;
+using Antmicro.Migrant.Hooks;
+using Antmicro.Migrant;
 
 namespace Antmicro.Renode.Peripherals.CPU
 {
@@ -25,12 +28,12 @@ namespace Antmicro.Renode.Peripherals.CPU
         public static void EnableExecutionTracing(this TranslationCPU @this, string file, ExecutionTracer.Format format)
         {
             var tracer = new ExecutionTracer(@this, file, format);
-            // we keep it as external to dispose/flush on quit 
-            EmulationManager.Instance.CurrentEmulation.ExternalsManager.AddExternal(tracer, "executionTracer");
-            
+            // we keep it as external to dispose/flush on quit
+            EmulationManager.Instance.CurrentEmulation.ExternalsManager.AddExternal(tracer, $"executionTracer-{@this.GetName()}");
+
             tracer.Start();
         }
-        
+
         public static void DisableExecutionTracing(this TranslationCPU @this)
         {
             var em = EmulationManager.Instance.CurrentEmulation.ExternalsManager;
@@ -42,7 +45,7 @@ namespace Antmicro.Renode.Peripherals.CPU
             }
         }
     }
-    
+
     public class ExecutionTracer : IDisposable, IExternal
     {
         public ExecutionTracer(TranslationCPU cpu, string file, Format format)
@@ -70,7 +73,7 @@ namespace Antmicro.Renode.Peripherals.CPU
             {
                 throw new RecoverableException($"There was an error when preparing the execution trace output file {file}: {e.Message}");
             }
-            
+
             AttachedCPU.SetHookAtBlockEnd(HandleBlockEndHook);
         }
 
@@ -82,7 +85,7 @@ namespace Antmicro.Renode.Peripherals.CPU
         public void Start()
         {
             blocks = new BlockingCollection<Block>();
-            
+
             underlyingThread = new Thread(WriterThreadBody);
             underlyingThread.IsBackground = true;
             underlyingThread.Name = "Execution tracer worker";
@@ -97,7 +100,7 @@ namespace Antmicro.Renode.Peripherals.CPU
             }
 
             this.Log(LogLevel.Info, "Stopping the execution tracer worker and dumping the trace to a file...");
-            
+
             blocks.CompleteAdding();
             underlyingThread.Join();
             underlyingThread = null;
@@ -106,6 +109,27 @@ namespace Antmicro.Renode.Peripherals.CPU
         }
 
         public TranslationCPU AttachedCPU { get; }
+
+        [PreSerialization]
+        private void PreSerializationHook()
+        {
+            if(underlyingThread == null)
+            {
+                return;
+            }
+            
+            wasStarted = true;
+            Stop();
+        }
+
+        [PostDeserialization]
+        private void PostDeserializationHook()
+        {
+            if(wasStarted)
+            {
+                Start();
+            }
+        }
 
         private void HandleBlock(Block block, StringBuilder sb)
         {
@@ -120,8 +144,7 @@ namespace Antmicro.Renode.Peripherals.CPU
                 {
                     // here we are prepared for longer opcodes
                     var mem = AttachedCPU.Bus.ReadBytes(pc, MaxOpcodeBytes, context: AttachedCPU);
-                    // TODO: what about flags?
-                    if(!tryDisassembleInstruction(pc, mem, 0, out var result))
+                    if(!tryDisassembleInstruction(pc, mem, block.DisassemblyFlags, out var result))
                     {
                         cachedItem = null;
                         // mark this as an invalid opcode
@@ -147,7 +170,7 @@ namespace Antmicro.Renode.Peripherals.CPU
                 {
                     var result = cachedItem.Value;
                     result.PC = pc;
-                   
+
                     switch(format)
                     {
                         case Format.PC:
@@ -157,7 +180,7 @@ namespace Antmicro.Renode.Peripherals.CPU
                         case Format.Opcode:
                             sb.AppendFormat("0x{0}\n", result.OpcodeString.ToUpper());
                             break;
-                            
+
                         case Format.PCAndOpcode:
                             sb.AppendFormat("0x{0:X}: 0x{1}\n", result.PC, result.OpcodeString.ToUpper());
                             break;
@@ -166,13 +189,13 @@ namespace Antmicro.Renode.Peripherals.CPU
                             AttachedCPU.Log(LogLevel.Error, "Unsupported format: {0}", format);
                             break;
                     }
-                    
+
                     pc += (ulong)result.OpcodeSize;
                     counter++;
                 }
             }
         }
-        
+
         private bool TryDisassembleRiscVInstruction(ulong pc, byte[] memory, uint flags, out DisassemblyResult result, int memoryOffset = 0)
         {
             var opcode = BitHelper.ToUInt32(memory, memoryOffset, Math.Min(4, memory.Length - memoryOffset), true);
@@ -203,7 +226,7 @@ namespace Antmicro.Renode.Peripherals.CPU
         private void WriterThreadBody()
         {
             var sb = new StringBuilder();
-            
+
             while(true)
             {
                 try
@@ -237,9 +260,20 @@ namespace Antmicro.Renode.Peripherals.CPU
                 return;
             }
 
+            var translatedAddress = AttachedCPU.TranslateAddress(pc, MpuAccess.InstructionFetch);
+            if(translatedAddress != ulong.MaxValue)
+            {
+                pc = translatedAddress;
+            }
+
             try
             {
-                blocks.Add(new Block { FirstInstructionPC = pc, InstructionsCount = instructionsInBlock });
+                blocks.Add(new Block
+                {
+                    FirstInstructionPC = pc,
+                    InstructionsCount = instructionsInBlock,
+                    DisassemblyFlags = AttachedCPU.CurrentBlockDisassemblyFlags,
+                });
             }
             catch(InvalidOperationException)
             {
@@ -277,14 +311,16 @@ namespace Antmicro.Renode.Peripherals.CPU
 
             return true;
         }
-        
+
+        [Transient]
         private Thread underlyingThread;
         private BlockingCollection<Block> blocks;
+        private bool wasStarted;
 
         private readonly string file;
         private readonly Format format;
         private readonly LRUCache<uint, Antmicro.Renode.Peripherals.CPU.Disassembler.DisassemblyResult?> cache;
-        private readonly DisassemblyDelegate tryDisassembleInstruction; 
+        private readonly DisassemblyDelegate tryDisassembleInstruction;
 
         private const int MaxOpcodeBytes = 16;
         private const int BufferFlushLevel = 1000000;
@@ -295,7 +331,7 @@ namespace Antmicro.Renode.Peripherals.CPU
         // - hence the last, not used, argument `memoryOffset` is also listed here;
         // this simplifies assignement and handling of disassmblers
         private delegate bool DisassemblyDelegate(ulong pc, byte[] memory, uint flags, out DisassemblyResult result, int memoryOffset = 0);
-        
+
         public enum Format
         {
             PC,
@@ -307,10 +343,11 @@ namespace Antmicro.Renode.Peripherals.CPU
         {
             public ulong FirstInstructionPC;
             public ulong InstructionsCount;
+            public uint DisassemblyFlags;
 
             public override string ToString()
             {
-                return $"[Block: ending at 0x{FirstInstructionPC:X} with {InstructionsCount} instructions]";
+                return $"[Block: starting at 0x{FirstInstructionPC:X} with {InstructionsCount} instructions, flags: 0x{DisassemblyFlags:X}]";
             }
         }
     }

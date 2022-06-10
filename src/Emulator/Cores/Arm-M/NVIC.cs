@@ -27,7 +27,7 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             priorities = new byte[IRQCount];
             activeIRQs = new Stack<int>();
             pendingIRQs = new SortedSet<int>();
-            systick = new LimitTimer(machine.ClockSource, systickFrequency, this, nameof(systick), uint.MaxValue, Direction.Descending, false, autoUpdate: true);
+            systick = new LimitTimer(machine.ClockSource, systickFrequency, this, nameof(systick), uint.MaxValue, Direction.Descending, false, eventEnabled: true, autoUpdate: true);
             this.machine = machine;
             this.priorityMask = priorityMask;
             irqs = new IRQState[IRQCount];
@@ -42,7 +42,6 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
                 }
             };
             Reset();
-            systick.EventEnabled = true;
         }
 
         public void AttachCPU(CortexM cpu)
@@ -447,7 +446,6 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             {
                 if(value)
                 {
-                    systick.Enabled = true;
                     this.NoisyLog("Waking up from deep sleep");
                     irqs[number] |= IRQState.Running;
                     // let's latch it if not active
@@ -463,6 +461,7 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
                 }
                 FindPendingInterrupt();
             }
+            systick.Enabled |= value;
         }
 
         public void SetSevOnPendingOnAllCPUs(bool value)
@@ -619,7 +618,7 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             }
         }
 
-        private int FindPendingInterrupt()
+        public int FindPendingInterrupt()
         {
             lock(irqs)
             {
@@ -652,7 +651,7 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
                 if(result != SpuriousInterrupt)
                 {
                     maskedInterruptPresent = true;
-                    if(!PRIMASK)
+                    if(cpu.PRIMASK == 0)
                     {
                         IRQ.Set(true);
                     }
@@ -690,24 +689,6 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
         {
             // Is in handler mode or is privileged
             return (cpu.XProgramStatusRegister & InterruptProgramStatusRegisterMask) != 0 || (cpu.Control & 1) == 0;
-        }
-
-        private bool primask;
-        public bool PRIMASK
-        {
-            get { return primask; }
-            set
-            {
-                if(value == primask)
-                {
-                    return;
-                }
-                primask = value;
-                if(!primask)
-                {
-                    FindPendingInterrupt();
-                }
-            }
         }
 
         private byte basepri;
