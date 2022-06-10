@@ -5,7 +5,7 @@
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
 //
-﻿using System;
+using System;
 using Antmicro.Renode.Peripherals.Bus;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Core.Structure;
@@ -146,9 +146,9 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         private void SetupRegisters()
         {
-            var control = new DoubleWordRegister(this);
-            txBufferEmptyInterruptEnable = control.DefineFlagField(7);
-            rxBufferNotEmptyInterruptEnable = control.DefineFlagField(6);
+            var interrupt_enable = new DoubleWordRegister(this);
+            txBufferEmptyInterruptEnable = cointerrupt_enablentrol.DefineFlagField(1);
+            rxBufferNotEmptyInterruptEnable = interrupt_enable.DefineFlagField(0);
 
             var registerDictionary = new Dictionary<long, DoubleWordRegister>
             { 
@@ -162,8 +162,10 @@ namespace Antmicro.Renode.Peripherals.SPI
                                 IRQ.Unset();
                             }
                         }, name:"SpiEnable")},
-                {(long)Registers.Mode, new DoubleWordRegister(this)
+                
+                { (long)Registers.Mode, new DoubleWordRegister(this)
                         .WithValueField(24, 8, name:"DLYBCS")
+                        .WithReservedBits(20, 4)
                         .WithValueField(16, 4, name:"PCS")
                         .WithFlag(7, name:"LLB")
                         .WithFlag(5, name:"WDRBT")
@@ -172,15 +174,20 @@ namespace Antmicro.Renode.Peripherals.SPI
                         .WithFlag(1, name:"PS")
                         .WithFlag(0, name:"MSTR")},
 
-                {(long)Registers.Status, new DoubleWordRegister(this)
+                { (long)Registers.Status, new DoubleWordRegister(this)
+                        .WithReservedBits(17, 15)
                         .WithFlag(16, FieldMode.Read, name:"SPIENS")
+                        .WithReservedBits(11, 5)
                         .WithFlag(10, FieldMode.Read, name:"UNDES")
                         .WithFlag(9, FieldMode.Read, name:"TXEMPTY")
                         .WithFlag(8, FieldMode.Read, name:"NSSR")
+                        .WithReservedBits(4, 4)
                         .WithFlag(3, FieldMode.Read, name:"OVRES")
                         .WithFlag(2, FieldMode.Read, name:"MODF")
                         .WithFlag(1, FieldMode.Read, name:"TDRE")
                         .WithFlag(0, FieldMode.Read, valueProviderCallback: _ => receiveBuffer.Count != 0, name:"RDRF")},
+                
+                { (long)Registers.InterruptEnable, interrupt_enable}
 
             };
             registers = new DoubleWordRegisterCollection(this, registerDictionary);
