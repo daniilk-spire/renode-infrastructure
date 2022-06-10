@@ -147,7 +147,7 @@ namespace Antmicro.Renode.Peripherals.SPI
         private void SetupRegisters()
         {
             var interrupt_enable = new DoubleWordRegister(this);
-            txBufferEmptyInterruptEnable = cointerrupt_enablentrol.DefineFlagField(1);
+            txBufferEmptyInterruptEnable = interrupt_enable.DefineFlagField(1);
             rxBufferNotEmptyInterruptEnable = interrupt_enable.DefineFlagField(0);
 
             var registerDictionary = new Dictionary<long, DoubleWordRegister>
