@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2020 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 //
 //  This file is licensed under the MIT License.
 //  Full license text is available in 'licenses/MIT.txt'.
@@ -30,15 +30,19 @@ namespace Antmicro.Renode.Logging.Profiling
             {
                 throw new RecoverableException(ex);
             }
-            
-            WriteHeader();
+
             EnableProfiling();
+            machine.PeripheralsChanged += OnPeripheralsChanged;
         }
 
         public void Log(BaseEntry entry)
         {
             lock(locker)
             {
+                if(!headerWritten)
+                {
+                    WriteHeader();
+                }
                 var bytes = Serialize(entry);
                 output.Write(bytes, 0, bytes.Length);
             }
@@ -52,8 +56,22 @@ namespace Antmicro.Renode.Logging.Profiling
 
         private void EnableProfiling()
         {
-            var cpus = machine.GetPeripheralsOfType<ICPU>();
+            var cpus = machine.GetPeripheralsOfType<ICPUWithMetrics>();
             foreach(var cpu in cpus)
+            {
+                cpu.EnableProfiling();
+            }
+        }
+
+        private void OnPeripheralsChanged(Machine machine, PeripheralsChangedEventArgs args)
+        {
+            if(args.Operation != PeripheralsChangedEventArgs.PeripheralChangeType.Addition)
+            {
+                return;
+            }
+
+            var cpu = args.Peripheral as ICPUWithMetrics;
+            if(cpu != null)
             {
                 cpu.EnableProfiling();
             }
@@ -61,6 +79,7 @@ namespace Antmicro.Renode.Logging.Profiling
 
         private void WriteHeader()
         {
+            headerWritten = true;
             var header = new ProfilerHeader();
             header.RegisterPeripherals(machine);
             output.Write(header.Bytes, 0, header.Bytes.Length);
@@ -87,6 +106,8 @@ namespace Antmicro.Renode.Logging.Profiling
 
             return result;
         }
+
+        private bool headerWritten;
 
         private readonly static object locker = new object();
         private readonly FileStream output;

@@ -36,15 +36,20 @@ namespace Antmicro.Renode.Core
             "import clr",
             "clr.AddReference('Emulator')",
             "clr.AddReference('Renode')",
-            "clr.AddReference('IronPython.StdLib')",
+        #if NET
+            "clr.AddReference('System.Console')", // It was moved to separate assembly on .NET Core.
+        #endif
+        #if !NET
+            "clr.AddReference('IronPython.StdLib')", // It is referenced by default on NET Core, but not on mono.
+        #endif
             "import Antmicro.Renode",
             "import System",
             "import time",
             "import sys",
             "import Antmicro.Renode.Logging.Logger",
             "clr.ImportExtensions(Antmicro.Renode.Logging.Logger)",
-            "import Antmicro.Renode.Peripherals.CPU.ControllableCPUExtension",
-            "clr.ImportExtensions(Antmicro.Renode.Peripherals.CPU.ControllableCPUExtension)",
+            "import Antmicro.Renode.Peripherals.CPU.ICPUWithRegistersExtensions",
+            "clr.ImportExtensions(Antmicro.Renode.Peripherals.CPU.ICPUWithRegistersExtensions)",
             "import Antmicro.Renode.Logging.LogLevel as LogLevel"
         };
 

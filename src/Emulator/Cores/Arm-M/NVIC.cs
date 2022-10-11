@@ -20,7 +20,7 @@ using Antmicro.Renode.Utilities;
 namespace Antmicro.Renode.Peripherals.IRQControllers
 {
     [AllowedTranslations(AllowedTranslation.ByteToDoubleWord)]
-    public class NVIC : IDoubleWordPeripheral, IKnownSize, IIRQController
+    public class NVIC : IDoubleWordPeripheral, IHasFrequency, IKnownSize, IIRQController
     {
         public NVIC(Machine machine, long systickFrequency = 50 * 0x800000, byte priorityMask = 0xFF)
         {
@@ -61,6 +61,18 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             return irqs.Take(16).Select((x,i) => new {x,i}).Where(y => (y.x & IRQState.Enabled) != 0).Select(y => y.i).OrderBy(x => x);
         }
 
+        public long Frequency
+        {
+            get
+            {
+                return systick.Frequency;
+            }
+            set
+            {
+                systick.Frequency = value;
+            }
+        }
+
         public int Divider
         {
             set
@@ -75,9 +87,10 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             {
                 return HandlePriorityRead(offset - PriorityStart, true);
             }
-            if(offset >= SetEnableStart && offset < SetEnableEnd)
+            if((offset >= SetEnableStart && offset < SetEnableEnd)
+               || (offset >= ClearEnableStart && offset < ClearEnableEnd))
             {
-                return HandleSetEnableRead(offset - SetEnableStart);
+                return HandleEnableRead(offset - SetEnableStart);
             }
             if(offset >= SetPendingStart && offset < SetPendingEnd)
             {
@@ -86,6 +99,10 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             if(offset >= ClearPendingStart && offset < ClearPendingEnd)
             {
                 return GetPending((int)(offset - ClearPendingStart));
+            }
+            if(offset >= ActiveBitStart && offset < ActiveBitEnd)
+            {
+                return GetActive((int)(offset - ActiveBitStart));
             }
             switch((Registers)offset)
             {
@@ -562,7 +579,7 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             }
         }
 
-        private uint HandleSetEnableRead(long offset)
+        private uint HandleEnableRead(long offset)
         {
             lock(irqs)
             {
@@ -685,6 +702,11 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             return BitHelper.GetValueFromBitsArray(irqs.Skip(16 + offset * 8).Take(32).Select(irq => (irq & IRQState.Pending) != 0));
         }
 
+        private uint GetActive(int offset)
+        {
+            return BitHelper.GetValueFromBitsArray(irqs.Skip(16 + offset * 8).Take(32).Select(irq => (irq & IRQState.Active) != 0));
+        }
+
         private bool IsPrivilegedMode()
         {
             // Is in handler mode or is privileged
@@ -722,6 +744,11 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             SysTickReloadValue = 0x14,
             SysTickValue = 0x18,
             SysTickCalibrationValue = 0x1C,
+            SetEnable = 0x100,
+            ClearEnable = 0x180,
+            SetPending = 0x200,
+            ActiveBit = 0x300,
+            InterruptPriority = 0x400,
             CPUID = 0xD00,
             InterruptControlState = 0xD04,
             VectorTableOffset = 0xD08,
@@ -766,16 +793,18 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
 
         private const int SpuriousInterrupt    = 256;
         private const int SetEnableStart       = 0x100;
-        private const int SetEnableEnd         = 0x120;
+        private const int SetEnableEnd         = 0x140;
         private const int ClearEnableStart     = 0x180;
-        private const int ClearEnableEnd       = 0x200;
-        private const int ClearPendingStart    = 0x280;
-        private const int ClearPendingEnd      = 0x300;
+        private const int ClearEnableEnd       = 0x1C0;
         private const int SetPendingStart      = 0x200;
-        private const int SetPendingEnd        = 0x280;
+        private const int SetPendingEnd        = 0x240;
+        private const int ClearPendingStart    = 0x280;
+        private const int ClearPendingEnd      = 0x2C0;
+        private const int ActiveBitStart       = 0x300;
+        private const int ActiveBitEnd         = 0x320;
         private const int PriorityStart        = 0x400;
-        private const int PriorityEnd          = 0x4F0;
-        private const int IRQCount             = 256 + 16;
+        private const int PriorityEnd          = 0x7F0;
+        private const int IRQCount             = 512 + 16;
         private const uint CPUID               = 0x412FC231;
         private const int VectKey              = 0x5FA;
         private const int VectKeyStat          = 0xFA05;

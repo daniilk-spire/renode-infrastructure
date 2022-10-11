@@ -20,9 +20,9 @@ using Org.BouncyCastle.Crypto.Digests;
 
 namespace Antmicro.Renode.Peripherals.MemoryControllers
 {
-    public class OpenTitan_ROMController : IDoubleWordPeripheral, IKnownSize
+    public class OpenTitan_ROMController: IDoubleWordPeripheral, IKnownSize
     {
-        public OpenTitan_ROMController(MappedMemory rom, ulong nonce, ulong keyLow, ulong keyHigh)
+        public OpenTitan_ROMController(MappedMemory rom, string nonce, string key)
         {
             this.rom = rom;
             romLengthInWords = (ulong)rom.Size / 4;
@@ -36,10 +36,9 @@ namespace Antmicro.Renode.Peripherals.MemoryControllers
                 throw new ConstructionException("Provided rom's size has to be divisible by word size (4)");
             }
 
-            KeyLow = keyLow;
-            KeyHigh = keyHigh;
+            Key = key;
             Nonce = nonce;
-            
+
             digest = new byte[NumberOfDigestRegisters * 4];
             expectedDigest = new byte[NumberOfDigestRegisters * 4];
             registers = new DoubleWordRegisterCollection(this, BuildRegisterMap());
@@ -86,19 +85,40 @@ namespace Antmicro.Renode.Peripherals.MemoryControllers
         public long Size => 0x1000;
 
         public IEnumerable<byte> Digest => digest;
-        
-        public ulong Nonce
+
+        public string Nonce
         {
             set
             {
-                addressKey = value >> (64 - romIndexWidth);
-                dataNonce = value << romIndexWidth;
+                ulong[] temp;
+                if(!Misc.TryParseHexString(value, out temp, sizeof(ulong), endiannessSwap: true))
+                {
+                    throw new RecoverableException("Unable to parse value. Incorrect Length");
+                }
+
+                addressKey = temp[0] >> (64 - romIndexWidth);
+                dataNonce = temp[0] << romIndexWidth;
+            }
+            get
+            {
+                return "{0:X16}".FormatWith((dataNonce >> romIndexWidth) | (addressKey << (64 - romIndexWidth)));
             }
         }
 
-        public ulong KeyLow { get; set; }
-        
-        public ulong KeyHigh { get; set; }
+        public string Key
+        {
+            set
+            {
+                if(!Misc.TryParseHexString(value, out key, sizeof(ulong), endiannessSwap: true))
+                {
+                    throw new RecoverableException("Unable to parse value. Incorrect Length");
+                }
+            }
+            get
+            {
+                return key.Select(x => "{0:X16}".FormatWith(x)).Stringify();
+            }
+        }
 
         private Dictionary<long, DoubleWordRegister> BuildRegisterMap()
         {
@@ -149,13 +169,13 @@ namespace Antmicro.Renode.Peripherals.MemoryControllers
 
             // data's width is 32 bits of proper data and 7 bits of ECC
             var dataPresent = PRESENTCipher.Descramble(data, 0, 32 + 7, NumberOfScramblingRounds);
-            var dataPrince = PRINCECipher.Scramble(index | dataNonce, KeyLow, KeyHigh, rounds: 6);
-            var descrabled = (uint)(dataPresent ^ dataPrince);
+            var dataPrince = PRINCECipher.Scramble(index | dataNonce, key[1], key[0], rounds: 6);
+            var descrabled = (dataPresent ^ dataPrince) & ((1UL << 39) - 1);
             if(index < romLengthInWords - 8 && !ECCHsiao.CheckECC(descrabled))
             {
                 this.Log(LogLevel.Warning, "ECC error at logical index 0x{0:X}", index);
             }
-            rom.WriteDoubleWord((long)index * 4, descrabled);
+            rom.WriteDoubleWord((long)index * 4, (uint)descrabled);
         }
 
         private void CalculateDigest(ulong[] words)
@@ -184,6 +204,7 @@ namespace Antmicro.Renode.Peripherals.MemoryControllers
 
         private readonly byte[] digest;
         private readonly byte[] expectedDigest;
+        private ulong[] key;
 
         private IFlagRegisterField checkerError;
         private IFlagRegisterField integrityError;
@@ -201,11 +222,13 @@ namespace Antmicro.Renode.Peripherals.MemoryControllers
                 var code = 0ul;
                 for(byte i = 0; i < 7; ++i)
                 {
-                    BitHelper.SetBit(ref code, i, BitHelper.CalculateParity(word & bitmask[i]));
+                    var inverted = i % 2 == 1;
+                    var bit = BitHelper.CalculateParity(word & bitmask[i]);
+                    BitHelper.SetBit(ref code, i, bit ^ inverted);
                 }
                 return (ulong)word | (code << 32);
             }
-            
+
             public static bool CheckECC(ulong word)
             {
                 return word == AddECC((uint)word);
@@ -218,8 +241,8 @@ namespace Antmicro.Renode.Peripherals.MemoryControllers
                 0xc2c1323b, 0x2dcc624c, 0x98505586
             };
         }
-
-        private enum Registers : long
+        #pragma warning disable format
+        private enum Registers: long
         {
             AlertTest       = 0x00,
             FatalAlertCause = 0x04,
@@ -240,5 +263,6 @@ namespace Antmicro.Renode.Peripherals.MemoryControllers
             ExpectedDigest6 = 0x40,
             ExpectedDigest7 = 0x44,
         }
+        #pragma warning restore format
     }
 }

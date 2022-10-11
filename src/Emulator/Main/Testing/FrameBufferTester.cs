@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2020 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -56,6 +56,7 @@ namespace Antmicro.Renode.Testing
 
         public void DetachFrom(IVideo obj)
         {
+            video.ConfigurationChanged -= HandleConfigurationChange;
             video.FrameRendered -= HandleNewFrame;
             video = null;
         }
@@ -111,29 +112,101 @@ namespace Antmicro.Renode.Testing
             throw new ArgumentException();
         }
 
+        public FrameBufferTester WaitForFrameROI(string fileName, uint startX, uint startY, uint width, uint height, float? timeout = null)
+        {
+            var image = Image.FromFile(fileName);
+            var bytes = BitmapToByteArray((Bitmap)image);
+            return WaitForFrameROI(bytes, startX, startY, width, height, timeout.HasValue ? TimeSpan.FromSeconds(timeout.Value) : (TimeSpan?)null);
+        }
+
+        public FrameBufferTester WaitForFrameROI(byte[] frame, uint startX, uint startY, uint width, uint height, TimeSpan? timeout = null)
+        {
+            if(width > frameWidth || startX > frameWidth - width || height > frameHeight || startY > frameHeight - height)
+            {
+                throw new ArgumentException("Region of interest doesn't fit in the frame");
+            }
+
+            if(height == 0 || width == 0)
+            {
+                throw new ArgumentException("Width and height can't be equal to 0.");
+            }
+            
+            var machine = video.GetMachine();
+            var finalTimeout = timeout ?? globalTimeout;
+            var timeoutEvent = machine.LocalTimeSource.EnqueueTimeoutEvent((ulong)finalTimeout.TotalMilliseconds);
+
+            do
+            {
+                if(framesQueue.TryTake(out var queuedFrame)
+                        && queuedFrame.Length == frame.Length)
+                {
+                    bool roiEqual = true;
+                    for(uint i = startY; roiEqual && i < startY + height; i++)
+                    {
+                        for(uint j = startX; roiEqual && j < startX + width; j++)
+                        {
+                            for(uint k = 0; roiEqual && k < 4; k++)
+                            {
+                                int index = (int)(i*frameWidth*4 + j*4 + k);
+                                if(frame[index] != queuedFrame[index])
+                                {
+                                    roiEqual = false;
+                                }
+                            }
+                        }
+                    }
+                    if(roiEqual)
+                    {
+                        return this;
+                    }
+                }
+                WaitHandle.WaitAny(new [] { timeoutEvent.WaitHandle, newFrameEvent });
+            }
+            while(!timeoutEvent.IsTriggered);
+
+            throw new ArgumentException();
+        }
+
         private void HandleConfigurationChange(int width, int height, Backends.Display.PixelFormat format, ELFSharp.ELF.Endianess endianess)
         {
             if(width == 0 || height == 0)
             {
                 return;
             }
-
-            converter = PixelManipulationTools.GetConverter(format, endianess, Backends.Display.PixelFormat.ARGB8888, ELFSharp.ELF.Endianess.LittleEndian);
-            frameSize = width * height * 4;
+            
+            this.format = format;
+            this.endianess = endianess;
+            InitConverter();
+            frameWidth = width;
+            frameHeight = height;
         }
 
         private void HandleNewFrame(byte[] obj)
         {
-            var buffer = new byte[frameSize];
+            var buffer = new byte[frameWidth * frameHeight * 4];
             converter.Convert(obj, ref buffer);
             framesQueue.Add(buffer);
             newFrameEvent.Set();
         }
 
-        private IVideo video;
+        [PostDeserialization]
+        private void InitConverter()
+        {
+            if(format != null && endianess != null)
+            {
+                converter = PixelManipulationTools.GetConverter((Backends.Display.PixelFormat)format, (ELFSharp.ELF.Endianess)endianess, Backends.Display.PixelFormat.ARGB8888, ELFSharp.ELF.Endianess.LittleEndian);
+            }
+        }
+        
+        [Transient]
         private IPixelConverter converter;
-        private int frameSize;
 
+        private int frameWidth;
+        private int frameHeight;
+        private IVideo video;
+        private Backends.Display.PixelFormat? format;
+        private ELFSharp.ELF.Endianess? endianess;
+        
         // Even if newFrameEvent was set before saving the emulation it doesn't matter
         // as we ultimately would have to start the `WaitForFrame` loop from the beginning either way
         [Constructor(false)]

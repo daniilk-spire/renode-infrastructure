@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2021 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -8,6 +8,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals.SPI;
 using Antmicro.Renode.Storage;
@@ -20,20 +21,27 @@ namespace Antmicro.Renode.Peripherals.SD
     // * Toggling selected state
     // * RCA (relative card address) filtering
     // As a result any SD controller with more than one SD card attached at the same time might not work properly.
+    // Card type (SC/HC/XC/UC) is determined based on the provided capacity
     public class SDCard : ISPIPeripheral, IDisposable
     {
-        public SDCard(string imageFile, long? size = null, bool persistent = false, bool spiMode = false, bool highCapacityMode = false)
+        public SDCard(string imageFile, long capacity, bool persistent = false, bool spiMode = false, BlockLength blockSize = BlockLength.Undefined)
         {
+            var blockLenghtInBytes = SDHelpers.BlockLengthInBytes(blockSize); 
+            if((blockSize != BlockLength.Undefined) && (capacity % blockLenghtInBytes != 0))
+            {
+                throw new ConstructionException($"Size (0x{capacity:X}) is not aligned to selected block size(0x{blockLenghtInBytes:X})");
+            }
+            
             this.spiMode = spiMode;
-            this.highCapacityMode = highCapacityMode;
+            this.highCapacityMode = SDHelpers.TypeFromCapacity((ulong)capacity) != CardType.StandardCapacity_SC;
+            this.capacity = capacity;
+            this.blockSize = blockSize;
             spiContext = new SpiContext();
 
-            dataBackend = DataStorage.Create(imageFile, size, persistent);
+            dataBackend = DataStorage.Create(imageFile, capacity, persistent);
 
-            var sdCapacityParameters = SDCapacity.SeekForCapacityParametes(dataBackend.Length);
-            dataBackend.SetLength(sdCapacityParameters.MemoryCapacity);
-
-            blockLengthInBytes = (uint)(1 << sdCapacityParameters.BlockSize);
+            var sdCapacityParameters = SDHelpers.SeekForCapacityParameters(capacity, blockSize);
+            blockLengthInBytes = SDHelpers.BlockLengthInBytes(sdCapacityParameters.BlockSize);
 
             cardStatusGenerator = new VariableLengthValue(32)
                 .DefineFragment(5, 1, () => (treatNextCommandAsAppCommand ? 1 : 0u), name: "APP_CMD bit")
@@ -62,19 +70,37 @@ namespace Antmicro.Renode.Peripherals.SD
                 .DefineFragment(31, 1, 1, name: "Card power up status bit (busy)")
             ;
 
-            cardSpecificDataGenerator = new VariableLengthValue(128)
-                .DefineFragment(47, 3, (uint)sdCapacityParameters.Multiplier, name: "device size multiplier")
-                .DefineFragment(62, 12, (ulong)sdCapacityParameters.DeviceSize, name: "device size")
-                .DefineFragment(80, 4, (uint)sdCapacityParameters.BlockSize, name: "max read data block length")
-                .DefineFragment(84, 12, (uint)(
-                      CardCommandClass.Class0 
-                    | CardCommandClass.Class2
-                    | CardCommandClass.Class4
-
-                    ), name: "card command classes")
-                .DefineFragment(96, 3, (uint)TransferRate.Transfer10Mbit, name: "transfer rate unit")
-                .DefineFragment(99, 4, (uint)TransferMultiplier.Multiplier2_5, name: "transfer multiplier")
-            ;
+            if(!highCapacityMode)
+            {
+                cardSpecificDataGenerator = new VariableLengthValue(128)
+                    .DefineFragment(47, 3, (uint)sdCapacityParameters.Multiplier, name: "device size multiplier")
+                    .DefineFragment(62, 12, (ulong)sdCapacityParameters.DeviceSize, name: "device size")
+                    .DefineFragment(80, 4, (uint)sdCapacityParameters.BlockSize, name: "max read data block length")
+                    .DefineFragment(84, 12, (uint)(
+                          CardCommandClass.Class0 
+                        | CardCommandClass.Class2
+                        | CardCommandClass.Class4
+                        ), name: "card command classes")
+                    .DefineFragment(96, 3, (uint)TransferRate.Transfer10Mbit, name: "transfer rate unit")
+                    .DefineFragment(99, 4, (uint)TransferMultiplier.Multiplier2_5, name: "transfer multiplier")
+                    .DefineFragment(126, 2, (uint)CSD.Version1, name: "CSD structure")
+                ;
+            }
+            else
+            {
+                cardSpecificDataGenerator = new VariableLengthValue(128)
+                    .DefineFragment(48, 22, (ulong)sdCapacityParameters.DeviceSize, name: "device size")
+                    .DefineFragment(80, 4, (uint)sdCapacityParameters.BlockSize, name: "max read data block length")
+                    .DefineFragment(84, 12, (uint)(
+                          CardCommandClass.Class0 
+                        | CardCommandClass.Class2
+                        | CardCommandClass.Class4
+                        ), name: "card command classes")
+                    .DefineFragment(96, 3, (uint)TransferRate.Transfer10Mbit, name: "transfer rate unit")
+                    .DefineFragment(99, 5, (uint)TransferMultiplier.Multiplier2_5, name: "transfer multiplier")
+                    .DefineFragment(126, 2, (uint)CSD.Version2, name: "CSD structure")
+                ;
+            }
 
             extendedCardSpecificDataGenerator = new VariableLengthValue(4096)
                 .DefineFragment((120), 8, 1, name: "command queue enabled")
@@ -114,8 +140,8 @@ namespace Antmicro.Renode.Peripherals.SD
         {
             GoToIdle();
 
-            var sdCapacityParameters = SDCapacity.SeekForCapacityParametes(dataBackend.Length);
-            blockLengthInBytes = (uint)(1 << sdCapacityParameters.BlockSize);
+            var sdCapacityParameters = SDHelpers.SeekForCapacityParameters(capacity, blockSize);
+            blockLengthInBytes = SDHelpers.BlockLengthInBytes(sdCapacityParameters.BlockSize);
         }
 
         public void Dispose()
@@ -488,22 +514,20 @@ namespace Antmicro.Renode.Peripherals.SD
                         : CardStatus;
 
                 case SdCardCommand.SetBlockLength_CMD16:
-                    blockLengthInBytes = highCapacityMode
-                        ? HighCapacityBlockLength
-                        : arg;
+                    blockLengthInBytes = arg;
                     return spiMode
                         ? GenerateR1Response()
                         : CardStatus;
 
                 case SdCardCommand.ReadSingleBlock_CMD17:
                     readContext.Offset = highCapacityMode
-                        ? arg * blockLengthInBytes 
+                        ? arg * HighCapacityBlockLength 
                         : arg;
                     state = SDCardState.SendingData;
                     return spiMode
                         ? GenerateR1Response()
                             .Append(BlockBeginIndicator)
-                            .Append(ReadData(blockLengthInBytes)) // the actual data
+                            .Append(ReadData(highCapacityMode ? HighCapacityBlockLength : blockLengthInBytes)) // the actual data
                         : CardStatus;
 
                 case SdCardCommand.ReadMultipleBlocks_CMD18:
@@ -515,7 +539,7 @@ namespace Antmicro.Renode.Peripherals.SD
                     }
                     state = SDCardState.SendingData;
                     readContext.Offset = highCapacityMode
-                        ? arg * blockLengthInBytes
+                        ? arg * HighCapacityBlockLength
                         : arg;
                     return CardStatus;
 
@@ -534,7 +558,7 @@ namespace Antmicro.Renode.Peripherals.SD
                     }
                     state = SDCardState.ReceivingData;
                     writeContext.Offset = highCapacityMode
-                        ? arg * blockLengthInBytes
+                        ? arg * HighCapacityBlockLength
                         : arg;
                     return CardStatus;
 
@@ -569,10 +593,13 @@ namespace Antmicro.Renode.Peripherals.SD
                     return true;
 
                 case SdCardApplicationSpecificCommand.SendOperatingConditionRegister_ACMD41:
-                    // activate the card
-                    state = SDCardState.Ready;
-
-                    highCapacityMode = BitHelper.IsBitSet(arg, 30);
+                    // If HCS is set to 0, High Capacity SD Memory Card never returns ready state
+                    var hcs = BitHelper.IsBitSet(arg, 30);
+                    if(!highCapacityMode || hcs)
+                    {
+                        // activate the card
+                        state = SDCardState.Ready;
+                    }
 
                     result = spiMode
                         ? GenerateR1Response()
@@ -593,9 +620,6 @@ namespace Antmicro.Renode.Peripherals.SD
             }
         }
 
-        private bool spiMode;
-        private bool highCapacityMode;
-
         private SDCardState state;
 
         private bool treatNextCommandAsAppCommand;
@@ -611,6 +635,10 @@ namespace Antmicro.Renode.Peripherals.SD
         private readonly VariableLengthValue cardIdentificationGenerator;
         private readonly VariableLengthValue switchFunctionStatusGenerator;
 
+        private readonly long capacity;
+        private readonly BlockLength blockSize;
+        private readonly bool spiMode;
+        private readonly bool highCapacityMode;
         private readonly SpiContext spiContext;
         private const byte DummyByte = 0xFF;
         private const byte BlockBeginIndicator = 0xFE;
@@ -782,6 +810,12 @@ namespace Antmicro.Renode.Peripherals.SD
             Programming = 7,
             Disconnect = 8
             // the rest is reserved
+        }
+
+        private enum CSD
+        {
+            Version1 = 0,
+            Version2 = 1
         }
     }
 }

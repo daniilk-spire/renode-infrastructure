@@ -134,6 +134,7 @@
     <Compile Include="Hooks\BusPeripheralsHooksPythonEngine.cs" />
     <Compile Include="Hooks\SystemBusHooksExtensions.cs" />
     <Compile Include="Hooks\WatchpointHookPythonEngine.cs" />
+    <Compile Include="HostInterfaces\Network\WindowsTapInterface.cs" />
     <Compile Include="HostInterfaces\Network\LinuxTapInterface.cs" />
     <Compile Include="HostInterfaces\Network\OsXTapInterface.cs" />
     <Compile Include="HostInterfaces\Network\ITapInterface.cs" />
@@ -177,7 +178,6 @@
     <Compile Include="Hooks\InterruptPythonEngine.cs" />
     <Compile Include="UserInterface\InlineImage.cs" />
     <Compile Include="HostInterfaces\Camera\HostCamera.cs" />
-    <Compile Include="Mocks\HPSHostController.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <ProjectExtensions>

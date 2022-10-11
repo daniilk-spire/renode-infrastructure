@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2021 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -231,7 +231,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
             StopCollection();
             LoadNextSample();
 
-            samplingThread = machine.ObtainManagedThread(LoadNextSample, (int)samplingRate);
+            samplingThread = machine.ObtainManagedThread(LoadNextSample, samplingRate);
             samplingThread.Start();
             this.Log(LogLevel.Debug, "Sample acquisition thread started");
         }
@@ -545,7 +545,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
                 .WithEnumField(4, 3, out sniffPowerMode, writeCallback: (_ , __) => SetSamplingFrequency(), name: "SPM")
                 .WithTaggedFlag("SPI_HS_EN", 7);
             Registers.DriveMotionX.Define(this)
-                .WithReservedBits(0, 2, 0b10)
+                .WithReservedBits(0, 2, 0b01)
                 .WithTaggedFlag("DPX", 2)
                 .WithTaggedFlag("DNX", 3)
                 .WithReservedBits(4, 4, 0b0000);

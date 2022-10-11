@@ -173,6 +173,7 @@
     <Compile Include="Core\Structure\IRegistrationPoint.cs" />
     <Compile Include="Peripherals\Bus\IBusRegistered.cs" />
     <Compile Include="Peripherals\Bus\BusRegistered.cs" />
+    <Compile Include="Peripherals\Bus\IBusController.cs" />
     <Compile Include="Peripherals\Bus\SystemBus.cs" />
     <Compile Include="Peripherals\Bus\PeripheralCollection.cs" />
     <Compile Include="Peripherals\Bus\UnhandledAccessBehaviour.cs" />
@@ -288,8 +289,12 @@
     </Compile>
     <Compile Include="Utilities\IInterestingType.cs" />
     <Compile Include="Peripherals\CPU\ICPU.cs" />
+    <Compile Include="Peripherals\CPU\ICPUWithMetrics.cs" />
     <Compile Include="Peripherals\CPU\ICPUWithExternalMmu.cs" />
-    <Compile Include="Peripherals\CPU\IControllableCPU.cs" />
+    <Compile Include="Peripherals\CPU\ICPUWithMappedMemory.cs" />
+    <Compile Include="Peripherals\CPU\ICPUWithRegisters.cs" />
+    <Compile Include="Peripherals\CPU\IInitableCPU.cs" />
+    <Compile Include="Peripherals\CPU\CPURegister.cs" />
     <Compile Include="Utilities\ConfigurationManager.cs" />
     <Compile Include="Testing\LEDTester.cs" />
     <Compile Include="Testing\NetworkInterfaceTester.cs" />
@@ -508,6 +513,13 @@
     <Compile Include="Utilities\GDB\PacketData.cs" />
     <Compile Include="Utilities\GDB\GdbStub.cs" />
     <Compile Include="Peripherals\CPU\ICpuSupportingGdb.cs" />
+    <Compile Include="Peripherals\CPU\ICPUWithMMU.cs" />
+    <Compile Include="Peripherals\CPU\GDB\GDBTypeBitField.cs" />
+    <Compile Include="Peripherals\CPU\GDB\GDBCustomType.cs" />
+    <Compile Include="Peripherals\CPU\GDB\GDBFeatureDescriptor.cs" />
+    <Compile Include="Peripherals\CPU\GDB\GDBRegisterDescriptor.cs" />
+    <Compile Include="Peripherals\CPU\GDB\GDBTypeEnumValue.cs" />
+    <Compile Include="Peripherals\CPU\GDB\GDBTypeField.cs" />
     <Compile Include="Utilities\GDB\IMultithreadCommand.cs" />
     <Compile Include="Utilities\BitPatternDetector.cs" />
     <Compile Include="Testing\SysbusTester.cs" />
@@ -548,6 +560,8 @@
     <Compile Include="Exceptions\RegisterValueUnavailableException.cs" />
     <Compile Include="Utilities\FilePath.cs" />
     <Compile Include="Peripherals\CPU\CpuAbortException.cs" />
+    <Compile Include="Peripherals\IHasFrequency.cs" />
+    <Compile Include="Peripherals\Sensor\SensorSamplesPacket.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <ItemGroup />

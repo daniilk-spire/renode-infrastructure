@@ -16,14 +16,11 @@ using System.IO;
 using Dynamitey;
 using System.Text;
 using System.Runtime.InteropServices;
-using System.Linq.Expressions;
 using System.Drawing;
 using Antmicro.Renode.Network;
 using System.Diagnostics;
 using Antmicro.Renode.Core.Structure.Registers;
 using System.Threading;
-using Antmicro.Renode.Debugging;
-using Antmicro.Renode.Exceptions;
 
 namespace Antmicro.Renode.Utilities
 {
@@ -118,7 +115,7 @@ namespace Antmicro.Renode.Utilities
         }
 
 
-        public static byte[] ReadBytes(this Stream stream, int count)
+        public static byte[] ReadBytes(this Stream stream, int count, bool throwIfEndOfStream = false)
         {
             var buffer = new byte[count];
             var read = 0;
@@ -139,6 +136,13 @@ namespace Antmicro.Renode.Utilities
                 }
                 read += readInThisIteration;
             }
+
+            if(throwIfEndOfStream && read < count)
+            {
+                throw new EndOfStreamException(
+                    $"End of stream encountered. {count}B were requested but only {read}B could be read"
+                );
+            }
             return buffer;
         }
 
@@ -149,7 +153,17 @@ namespace Antmicro.Renode.Utilities
 
         public static int MB(this int value)
         {
-            return 1024 * 1024 * value;
+            return 1024 * value.KB();
+        }
+        
+        public static ulong GB(this int value)
+        {
+            return 1024 * (ulong)value.MB();
+        }
+        
+        public static ulong TB(this int value)
+        {
+            return 1024 * value.GB();
         }
 
         /// <summary>
@@ -385,9 +399,45 @@ namespace Antmicro.Renode.Utilities
             int idx = 0;
             if(source.Any())
             {
-                return source.Aggregate((x, y) => x + separator + y + (limitPerLine != 0 && (++idx % limitPerLine == 0) ? "\n" : string.Empty));
+                return source.Aggregate((x, y) => x + separator + (limitPerLine != 0 && (++idx % limitPerLine == 0) ? "\n" : string.Empty) + y);
             }
             return String.Empty;
+        }
+
+        public static byte[] HexStringToByteArray(string hexString, bool reverse = false)
+        {
+            if(hexString.Length % 2 != 0)
+            {
+                throw new FormatException($"The length of hex string ({hexString.Length}) is not a multiple of 2.");
+            }
+
+            byte[] bytes = new byte[hexString.Length / 2];
+            for(int i = 0; i < bytes.Length; i++)
+            {
+                int byteIndex = reverse ? bytes.Length - 1 - i : i;
+                bytes[byteIndex] = Convert.ToByte(hexString.Substring(i * 2, 2), 16);
+            }
+            return bytes;
+        }
+
+        // Can't use the `sizeof` in the generic code unless it is restricted to unmanaged types, and that's possible only in C#7.0 and newer.
+        // Hence the `elementSize` argument - otherwise it would be replaced with a `sizeof(T)`
+        public static bool TryParseHexString<T>(string hexString, out T[] outArray, int elementSize, bool endiannessSwap=false)
+        {
+            var byteArray = HexStringToByteArray(hexString);
+            var byteLength = byteArray.Length;
+            if(byteLength % elementSize != 0)
+            {
+                outArray = new T[0];
+                return false;
+            }
+            outArray = new T[byteLength / elementSize];
+            if(endiannessSwap)
+            {
+                EndiannessSwapInPlace(byteArray, elementSize);
+            }
+            Buffer.BlockCopy(byteArray, 0, outArray, 0, byteLength);
+            return true;
         }
 
         // MoreLINQ - Extensions to LINQ to Objects
@@ -899,6 +949,14 @@ namespace Antmicro.Renode.Utilities
             return true;
         }
 
+        public static uint EndiannessSwap(uint value)
+        {
+            var temp = new byte[sizeof(uint)];
+            Misc.ByteArrayWrite(0, value, temp);
+            Misc.EndiannessSwapInPlace(temp, sizeof(uint));
+            return Misc.ByteArrayRead(0, temp);
+        }
+
         public static bool CalculateUnitSuffix(double value, out double newValue, out string unit)
         {
             var units = new [] { "B", "KB", "MB", "GB", "TB" };
@@ -1134,15 +1192,22 @@ namespace Antmicro.Renode.Utilities
             return result;
         }
 
-        public static DateTime With(this DateTime @this, int? year = null, int? month = null, int? day = null, int? hour = null, int? minute = null, int? second = null)
+        public static DateTime With(this DateTime @this, int? year = null, int? month = null, int? day = null, int? hour = null, int? minute = null, int? second = null, double? millisecond = null)
         {
-            return new DateTime(
+            var dateTime = new DateTime(
                 year ?? @this.Year,
                 month ?? @this.Month,
                 day ?? @this.Day,
                 hour ?? @this.Hour,
                 minute ?? @this.Minute,
                 second ?? @this.Second);
+
+            if(millisecond != null)
+            {
+                dateTime = dateTime.AddMilliseconds(millisecond.Value);
+            }
+
+            return dateTime;
         }
 
         public static int EnqueueRange<T>(this Queue<T> @this, IEnumerable<T> data, int? limit = null)
@@ -1342,6 +1407,27 @@ namespace Antmicro.Renode.Utilities
             return true;
         }
 
+        public static void FillByteArrayWithArray(byte[] destinationArray, byte[] sourceArray)
+        {
+            var srcLength = sourceArray.Length;
+            var dstLength = destinationArray.Length;
+            if(srcLength >= dstLength)
+            {
+                Buffer.BlockCopy(sourceArray, 0, destinationArray, 0, dstLength);
+            }
+            else
+            {
+                var currentIndex = 0;
+                while((currentIndex + srcLength) < dstLength)
+                {
+                    Buffer.BlockCopy(sourceArray, 0, destinationArray, currentIndex, srcLength);
+                    currentIndex += srcLength;
+                }
+                var remindingElements = dstLength % srcLength;
+                Buffer.BlockCopy(sourceArray, 0, destinationArray, currentIndex, remindingElements);
+            }
+        }
+
         public static int CountTrailingZeroes(uint value)
         {
             int count = 0;
@@ -1356,6 +1442,43 @@ namespace Antmicro.Renode.Utilities
             }
             return count;
         }
+
+        public static byte[] AsBytes(uint[] data)
+        {
+            var outLength = data.Length * sizeof(uint);
+            var dataAsBytes = new byte[outLength];
+            Buffer.BlockCopy(data, 0, dataAsBytes, 0, outLength);
+            return dataAsBytes;
+        }
+
+        public static T ReadStruct<T>(this Stream @this) where T : struct
+        {
+            var structSize = Marshal.SizeOf(typeof(T));
+            return @this.ReadBytes(structSize).ToStruct<T>();
+        }
+
+        public static T ToStruct<T>(this byte[] @this) where T : struct
+        {
+            var size = @this.Length;
+            var bufferPointer = Marshal.AllocHGlobal(size);
+            Marshal.Copy(@this, 0, bufferPointer, size);
+            var result = (T)Marshal.PtrToStructure(bufferPointer, typeof(T));
+            Marshal.FreeHGlobal(bufferPointer);
+            return result;
+        }
+
+        public static bool TryGetNext<T>(this IEnumerator<T> @this, out T element)
+        {
+            element = default(T);
+            if(@this.MoveNext())
+            {
+                element = @this.Current;
+                return true;
+            }
+            return false;
+        }
+
+        public static DateTime UnixEpoch = new DateTime(1970, 1, 1);
     }
 }
 

@@ -37,7 +37,7 @@ namespace Antmicro.Renode.Peripherals.Bus
     /// </summary>
     [Icon("sysbus")]
     [ControllerMask(typeof(IPeripheral))]
-    public sealed partial class SystemBus : IPeripheralContainer<IBusPeripheral, BusRangeRegistration>, IPeripheralRegister<IKnownSize, BusPointRegistration>,
+    public sealed partial class SystemBus : IBusController, IPeripheralContainer<IBusPeripheral, BusRangeRegistration>, IPeripheralRegister<IKnownSize, BusPointRegistration>,
         IPeripheralRegister<ICPU, CPURegistrationPoint>, IDisposable, IPeripheral, IPeripheralRegister<IBusPeripheral, BusMultiRegistration>
     {
         internal SystemBus(Machine machine)
@@ -126,9 +126,12 @@ namespace Antmicro.Renode.Peripherals.Bus
                 cpuById.Add(registrationPoint.Slot.Value, cpu);
                 cpuLocalPeripherals[cpu] = new PeripheralCollection(this);
                 idByCpu.Add(cpu, registrationPoint.Slot.Value);
-                foreach(var mapping in mappingsForPeripheral.SelectMany(x => x.Value).Where(x => x.Context == null || x.Context == cpu))
+                if(cpu is ICPUWithMappedMemory memoryMappedCpu)
                 {
-                    cpu.MapMemory(mapping);
+                    foreach(var mapping in mappingsForPeripheral.SelectMany(x => x.Value).Where(x => x.Context == null || x.Context == cpu))
+                    {
+                        memoryMappedCpu.MapMemory(mapping);
+                    }
                 }
             }
         }
@@ -488,7 +491,7 @@ namespace Antmicro.Renode.Peripherals.Bus
             pcCache.Invalidate();
         }
 
-        public void LoadELF(ReadFilePath fileName, bool useVirtualAddress = false, bool allowLoadsOnlyToMemory = true, IControllableCPU cpu = null)
+        public void LoadELF(ReadFilePath fileName, bool useVirtualAddress = false, bool allowLoadsOnlyToMemory = true, IInitableCPU cpu = null)
         {
             if(!Machine.IsPaused)
             {
@@ -525,7 +528,7 @@ namespace Antmicro.Renode.Peripherals.Bus
                 }
                 else
                 {
-                    foreach(var c in GetCPUs().Cast<IControllableCPU>())
+                    foreach(var c in GetCPUs().OfType<IInitableCPU>())
                     {
                         c.InitFromElf(elf);
                     }
@@ -534,7 +537,7 @@ namespace Antmicro.Renode.Peripherals.Bus
             }
         }
 
-        public void LoadUImage(ReadFilePath fileName, IControllableCPU cpu = null)
+        public void LoadUImage(ReadFilePath fileName, IInitableCPU cpu = null)
         {
             if(!Machine.IsPaused)
             {
@@ -567,7 +570,7 @@ namespace Antmicro.Renode.Peripherals.Bus
             }
             else
             {
-                foreach(var c in GetCPUs().Cast<IControllableCPU>())
+                foreach(var c in GetCPUs().OfType<IInitableCPU>())
                 {
                     c.InitFromUImage(uImage);
                 }
@@ -619,7 +622,7 @@ namespace Antmicro.Renode.Peripherals.Bus
             this.DebugLog("Binary loaded.");
         }
 
-        public void LoadHEX(ReadFilePath fileName, IControllableCPU cpu = null)
+        public void LoadHEX(ReadFilePath fileName, IInitableCPU cpu = null)
         {
             string line;
             int lineNum = 1;
@@ -766,7 +769,7 @@ namespace Antmicro.Renode.Peripherals.Bus
             return true;
         }
 
-        public void MapMemory(IMappedSegment segment, IBusPeripheral owner, bool relative = true, ICPU context = null)
+        public void MapMemory(IMappedSegment segment, IBusPeripheral owner, bool relative = true, ICPUWithMappedMemory context = null)
         {
             if(relative)
             {
@@ -797,7 +800,7 @@ namespace Antmicro.Renode.Peripherals.Bus
             lock(cpuSync)
             {
                 mappingsRemoved = true;
-                foreach(var cpu in idByCpu.Keys)
+                foreach(var cpu in idByCpu.Keys.OfType<ICPUWithMappedMemory>())
                 {
                     cpu.UnmapMemory(range);
                 }
@@ -806,7 +809,7 @@ namespace Antmicro.Renode.Peripherals.Bus
 
         public void SetPageAccessViaIo(ulong address)
         {
-            foreach(var cpu in cpuById.Values)
+            foreach(var cpu in cpuById.Values.OfType<ICPUWithMappedMemory>())
             {
                 cpu.SetPageAccessViaIo(address);
             }
@@ -814,7 +817,7 @@ namespace Antmicro.Renode.Peripherals.Bus
 
         public void ClearPageAccessViaIo(ulong address)
         {
-            foreach(var cpu in cpuById.Values)
+            foreach(var cpu in cpuById.Values.OfType<ICPUWithMappedMemory>())
             {
                 cpu.ClearPageAccessViaIo(address);
             }
@@ -1018,10 +1021,7 @@ namespace Antmicro.Renode.Peripherals.Bus
                 .Append("[")
                 .Append(cpuName);
 
-            if(TryGetPCForCPU(cpu, out var pc))
-            {
-                builder.AppendFormat(": 0x{0:X}", pc.RawValue);
-            }
+            builder.AppendFormat(": 0x{0:X}", cpu.PC.RawValue);
 
             builder
                 .Append("] ")
@@ -1392,10 +1392,11 @@ namespace Antmicro.Renode.Peripherals.Bus
                 peripherals.Add(registrationPoint.Range.StartAddress, registrationPoint.Range.EndAddress + 1, registeredPeripheral, methods);
                 // let's add new mappings
                 var mappedPeripheral = peripheral as IMapped;
+                var cpuWithMappedMemory = context as ICPUWithMappedMemory;
                 if(mappedPeripheral != null)
                 {
                     var segments = mappedPeripheral.MappedSegments;
-                    var mappings = segments.Select(x => FromRegistrationPointToSegmentWrapper(x, registrationPoint, context)).Where(x => x != null);
+                    var mappings = segments.Select(x => FromRegistrationPointToSegmentWrapper(x, registrationPoint, cpuWithMappedMemory)).Where(x => x != null);
                     AddMappings(mappings, peripheral);
                 }
                 machine.RegisterAsAChildOf(this, peripheral, registrationPoint);
@@ -1548,19 +1549,6 @@ namespace Antmicro.Renode.Peripherals.Bus
                 Select(x => x.Peripheral).Cast<MappedMemory>().Distinct().ToList();
         }
 
-        private bool TryGetPCForCPU(ICPU cpu, out RegisterValue pc)
-        {
-            var controllableCpu = cpu as IControllableCPU;
-            if(controllableCpu == null)
-            {
-                pc = default(RegisterValue);
-                return false;
-            }
-            pc = controllableCpu.PC;
-            return true;
-
-        }
-
         private void AddMappings(IEnumerable<MappedSegmentWrapper> newMappings, IBusPeripheral owner)
         {
             using(machine.ObtainPausedState())
@@ -1585,7 +1573,7 @@ namespace Antmicro.Renode.Peripherals.Bus
                         }
                         else
                         {
-                            foreach(var cpu in idByCpu.Keys)
+                            foreach(var cpu in idByCpu.Keys.OfType<ICPUWithMappedMemory>())
                             {
                                 cpu.MapMemory(mapping);
                             }
@@ -1685,7 +1673,7 @@ namespace Antmicro.Renode.Peripherals.Bus
             this.Log(LogLevel.Warning, warning, address, value, type);
         }
 
-        private static MappedSegmentWrapper FromRegistrationPointToSegmentWrapper(IMappedSegment segment, BusRangeRegistration registrationPoint, ICPU context)
+        private static MappedSegmentWrapper FromRegistrationPointToSegmentWrapper(IMappedSegment segment, BusRangeRegistration registrationPoint, ICPUWithMappedMemory context)
         {
             if(segment.StartingOffset >= registrationPoint.Range.Size + registrationPoint.Offset)
             {
@@ -1746,7 +1734,7 @@ namespace Antmicro.Renode.Peripherals.Bus
 
         private class MappedSegmentWrapper : IMappedSegment
         {
-            public MappedSegmentWrapper(IMappedSegment wrappedSegment, ulong peripheralOffset, ulong maximumSize, ICPU context)
+            public MappedSegmentWrapper(IMappedSegment wrappedSegment, ulong peripheralOffset, ulong maximumSize, ICPUWithMappedMemory context)
             {
                 this.wrappedSegment = wrappedSegment;
                 this.peripheralOffset = peripheralOffset;
@@ -1765,7 +1753,7 @@ namespace Antmicro.Renode.Peripherals.Bus
                     StartingOffset, Size, OriginalStartingOffset, PeripheralOffset, context);
             }
 
-            public ICPU Context
+            public ICPUWithMappedMemory Context
             {
                 get
                 {
@@ -1841,7 +1829,7 @@ namespace Antmicro.Renode.Peripherals.Bus
             private readonly IMappedSegment wrappedSegment;
             private readonly ulong peripheralOffset;
             private readonly ulong usedSize;
-            private readonly ICPU context;
+            private readonly ICPUWithMappedMemory context;
         }
 
         private enum HexRecordType

@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2018 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -10,124 +10,45 @@ using Antmicro.Migrant;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Peripherals.CPU;
 using Antmicro.Renode.Peripherals.Bus;
+using Antmicro.Renode.Time;
 
 namespace Antmicro.Renode.UnitTests.Mocks
 {
-    public class EmptyCPU : ICPU
+    public class EmptyCPU : BaseCPU
     {
-
-        public EmptyCPU(Machine machine)
-        {
-            this.machine = machine;
-        }
-
-        public virtual void Start()
-        {
-
-        }
-
-        public virtual void Pause()
+        public EmptyCPU(Machine machine, string model = "emptyCPU") : base(0, model, machine, ELFSharp.ELF.Endianess.LittleEndian)
         {
         }
-
-        public virtual void Resume()
-        {
-
-        }
-
-        public virtual void Reset()
-        {
-
-        }
-
-        public virtual void MapMemory(IMappedSegment segment)
-        {
-        }
-
-        public virtual void UnmapMemory(Range range)
-        {
-        }
-
-        public void SetPageAccessViaIo(ulong address)
-        {
-        }
-
-        public void ClearPageAccessViaIo(ulong address)
-        {
-        }
-
-        public virtual void UpdateContext()
-        {
-        }
-
-        public virtual void SyncTime()
-        {
-        }
-
-        public virtual ulong ExecutedInstructions
-        {
-            get
-            {
-                return 0;
-            }
-        }
-
-        public virtual RegisterValue PC
-        {
-            get
-            {
-                return 0;
-            }
-            set
-            {
-            }
-        }
-
-        public SystemBus Bus
-        {
-            get
-            {
-                return machine.SystemBus;
-            }
-        }
-
-        public virtual string Model
-        {
-            get
-            {
-                return "empty";
-            }
-        }
-
+        
         public virtual void Load(PrimitiveReader reader)
         {
-
         }
-
-        public bool IsHalted
-        {
-            get
-            {
-                return false;
-            }
-            set
-            {
-            }
-        }
-
-        public bool OnPossessedThread { get { return true; } }
 
         public virtual void Save(PrimitiveWriter writer)
         {
-
         }
 
-        public void EnableProfiling()
+        public override ulong ExecutedInstructions => 0;
+        
+
+        public override RegisterValue PC
         {
-
+            get
+            {
+                return 0;
+            }
+            set
+            {
+            }
         }
 
-        protected readonly Machine machine;
+        public override ExecutionMode ExecutionMode { get; set; }
+        
+        protected override ExecutionResult ExecuteInstructions(ulong numberOfInstructionsToExecute, out ulong numberOfExecutedInstructions)
+        {
+            numberOfExecutedInstructions = 0;
+            return ExecutionResult.Interrupted;
+        }
     }
 }
 

@@ -59,6 +59,8 @@ namespace Antmicro.Renode.Core
             {
                 LocalTimeSource = new SlaveTimeSource();
             }
+
+            machineCreatedAt = new DateTime(CustomDateTime.Now.Ticks, DateTimeKind.Local);
         }
 
         [PreSerialization]
@@ -377,7 +379,6 @@ namespace Antmicro.Renode.Core
                     Resume();
                     return;
                 }
-                machineStartedAt = CustomDateTime.Now;
                 foreach(var ownLife in ownLifes.OrderBy(x => x is ICPU ? 1 : 0))
                 {
                     this.NoisyLog("Starting {0}.", GetNameForOwnLife(ownLife));
@@ -521,38 +522,72 @@ namespace Antmicro.Renode.Core
             EmulationManager.Instance.CurrentEmulation.BackendManager.HideAnalyzersFor(this);
         }
 
-        public IManagedThread ObtainManagedThread(Action action, int frequency)
+        public IManagedThread ObtainManagedThread(Action action, uint frequency, string name = "managed thread", IEmulationElement owner = null, Func<bool> stopCondition = null)
         {
-            var ce = new ClockEntry(1, frequency, action, this, "managed thread", enabled: false);
-            ClockSource.AddClockEntry(ce);
-            return new ManagedThreadWrappingClockEntry(ClockSource, action);
+            return new ManagedThreadWrappingClockEntry(this, action, frequency, name, owner, stopCondition);
         }
 
         private class ManagedThreadWrappingClockEntry : IManagedThread
         {
-            public ManagedThreadWrappingClockEntry(IClockSource cs, Action action)
+            public ManagedThreadWrappingClockEntry(Machine machine, Action action, uint frequency, string name, IEmulationElement owner, Func<bool> stopCondition = null)
             {
-                clockSource = cs;
-                this.action = action;
+                this.action = () =>
+                {
+                    if(stopCondition != null && stopCondition())
+                    {
+                        Dispose();
+                    }
+                    else
+                    {
+                        action();
+                    }
+                };
+                this.frequency = frequency;
+                this.machine = machine;
+                this.name = name;
+                this.owner = owner ?? machine;
             }
 
             public void Dispose()
             {
-                clockSource.RemoveClockEntry(action);
+                machine.ClockSource.TryRemoveClockEntry(action);
             }
 
             public void Start()
             {
-                clockSource.ExchangeClockEntryWith(action, x => x.With(enabled: true));
+                machine.ClockSource.ExchangeClockEntryWith(
+                    action, x => x.With(enabled: true),
+                    factoryIfNonExistent: () => { clockEntryAdded = true; return new ClockEntry(1, frequency, action, owner, name, enabled: true); }
+                );
+            }
+
+            public void StartDelayed(TimeInterval delay)
+            {
+                Action<TimeInterval> startThread = ts =>
+                {
+                    Start();
+
+                    // Let's have the first action run precisely at the specified time.
+                    action();
+                };
+                machine.ScheduleAction(delay, startThread, name);
             }
 
             public void Stop()
             {
-                clockSource.ExchangeClockEntryWith(action, x => x.With(enabled: false));
+                if(clockEntryAdded)
+                {
+                    machine.ClockSource.ExchangeClockEntryWith(action, x => x.With(enabled: false));
+                }
             }
 
-            private readonly IClockSource clockSource;
+            private bool clockEntryAdded;
+
             private readonly Action action;
+            private readonly uint frequency;
+            private readonly Machine machine;
+            private readonly string name;
+            private readonly IEmulationElement owner;
         }
 
         private BaseClockSource clockSource;
@@ -589,19 +624,6 @@ namespace Antmicro.Renode.Core
                 x => (x.Frequency == 0 || x.Period == 0) ? "---" :  Misc.NormalizeDecimal((ulong)x.Period / (x.Frequency * (double)x.Step))  + "s"
             );
             return table.ToArray();
-        }
-
-        public DateTime GetRealTimeClockBase()
-        {
-            switch(RealTimeClockMode)
-            {
-            case RealTimeClockMode.VirtualTime:
-                return new DateTime(1970, 1, 1) + ElapsedVirtualTime.TimeElapsed.ToTimeSpan();
-            case RealTimeClockMode.VirtualTimeWithHostBeginning:
-                return machineStartedAt + ElapsedVirtualTime.TimeElapsed.ToTimeSpan();
-            default:
-                throw new ArgumentOutOfRangeException();
-            }
         }
 
         public void AttachGPIO(IPeripheral source, int sourceNumber, IGPIOReceiver destination, int destinationNumber, int? localReceiverNumber = null)
@@ -892,6 +914,29 @@ namespace Antmicro.Renode.Core
             }
         }
 
+        public void ScheduleAction(TimeInterval delay, Action<TimeInterval> action, string name = null)
+        {
+            if(SystemBus.TryGetCurrentCPU(out var cpu))
+            {
+                cpu.SyncTime();
+            }
+            else
+            {
+                this.Log(LogLevel.Debug, "Couldn't synchronize time before scheduling action; a slight inaccuracy might occur.");
+            }
+
+            var currentTime = ElapsedVirtualTime.TimeElapsed;
+            var startTime = currentTime + delay;
+
+            Action clockEntryHandler = () =>
+            {
+                this.Log(LogLevel.Noisy, "{0}: Executing action scheduled at {1} (current time: {2})", name ?? "unnamed", startTime, currentTime);
+                action(currentTime);
+            };
+
+            ClockSource.AddClockEntry(new ClockEntry(delay.Ticks, (long)TimeInterval.TicksPerSecond, clockEntryHandler, this, name, workMode: WorkMode.OneShot));
+        }
+
         public Profiler Profiler { get; private set; }
 
         public IPeripheral this[string name]
@@ -965,14 +1010,58 @@ namespace Antmicro.Renode.Core
             }
         }
 
-        public RealTimeClockMode RealTimeClockMode { get; set; }
+        public DateTime RealTimeClockDateTime
+        {
+            get
+            {
+                if(SystemBus.TryGetCurrentCPU(out var cpu))
+                {
+                    cpu.SyncTime();
+                }
+                return RealTimeClockStart + ElapsedVirtualTime.TimeElapsed.ToTimeSpan();
+            }
+        }
+
+        public RealTimeClockMode RealTimeClockMode
+        {
+            get => realTimeClockMode;
+            set
+            {
+                realTimeClockMode = value;
+                var realTimeClockModeChanged = RealTimeClockModeChanged;
+                if(realTimeClockModeChanged != null)
+                {
+                    realTimeClockModeChanged(this);
+                }
+            }
+        }
+
+        public DateTime RealTimeClockStart
+        {
+            get
+            {
+                switch(RealTimeClockMode)
+                {
+                case RealTimeClockMode.Epoch:
+                    return Misc.UnixEpoch;
+                case RealTimeClockMode.HostTimeLocal:
+                    return machineCreatedAt;
+                case RealTimeClockMode.HostTimeUTC:
+                    return TimeZoneInfo.ConvertTimeToUtc(machineCreatedAt, sourceTimeZone: TimeZoneInfo.Local);
+                default:
+                    throw new ArgumentOutOfRangeException();
+                }
+            }
+        }
 
         [field: Transient]
-        public event Action<Machine, MachineStateChangedEventArgs> StateChanged;
+        public event Action<Machine> MachineReset;
         [field: Transient]
         public event Action<Machine, PeripheralsChangedEventArgs> PeripheralsChanged;
         [field: Transient]
-        public event Action<Machine> MachineReset;
+        public event Action<Machine> RealTimeClockModeChanged;
+        [field: Transient]
+        public event Action<Machine, MachineStateChangedEventArgs> StateChanged;
 
         public const char PathSeparator = '.';
         public const string SystemBusName = "sysbus";
@@ -1310,14 +1399,16 @@ namespace Antmicro.Renode.Core
         private int currentStampLevel;
         private Recorder recorder;
         private Player player;
-        private DateTime machineStartedAt;
         private TimeSourceBase localTimeSource;
+        private RealTimeClockMode realTimeClockMode;
+
         private readonly MultiTree<IPeripheral, IRegistrationPoint> registeredPeripherals;
         private readonly Dictionary<IPeripheral, string> localNames;
         private readonly HashSet<IHasOwnLife> ownLifes;
         private readonly object collectionSync;
         private readonly object pausingSync;
         private readonly object disposedSync;
+        private readonly DateTime machineCreatedAt;
 
         private enum State
         {
