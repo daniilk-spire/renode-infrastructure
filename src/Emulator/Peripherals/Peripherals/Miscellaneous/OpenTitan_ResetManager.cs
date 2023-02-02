@@ -4,15 +4,11 @@
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
 //
-using System;
-using System.Linq;
 using System.Collections.Generic;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure.Registers;
 using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Logging;
-using Antmicro.Renode.Peripherals;
-using Antmicro.Renode.Peripherals.Bus;
 using Antmicro.Renode.Peripherals.CPU;
 using Antmicro.Renode.Utilities;
 
@@ -33,7 +29,17 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             LifeCycleState = new GPIO();    // Current state of rst_lc_n tree.
             SystemState = new GPIO();       // Current state of rst_sys_n tree.
             Resets = new GPIO();            // Resets used by the rest of the core domain.
-            // AstResets                    // Resets used by ast.
+
+            // Alerts
+            FatalAlert = new GPIO();            // Triggered when a fatal structural fault is detected
+            FatalConsistencyAlert = new GPIO(); // Triggered when a reset consistency fault is detected
+        }
+
+        public override void Reset()
+        {
+            base.Reset();
+            FatalAlert.Unset();
+            FatalConsistencyAlert.Unset();
         }
 
         public void MarkAsSkippedOnLifeCycleReset(IPeripheral peripheral)
@@ -50,6 +56,23 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             {
                 skippedOnSystemReset.Add(peripheral);
             }
+        }
+
+        public void LifeCycleReset()
+        {
+            ExecuteResetWithSkipped(skippedOnLifeCycleReset);
+        }
+
+        public void PeripheralRequestedReset(HardwareResetReason resetReason, bool lowPower)
+        {
+            // Reset initiated by peripheral
+            ExecutePeripheralInitiatedResetWithSkipped(skippedOnSystemReset);
+            
+            hardwareResetRequest.Value = resetReason;
+            lowPowerExitFlag.Value = lowPower;
+            nonDebugModuleResetFlag.Value = false;
+            powerOnResetFlag.Value = false;
+            softwareResetFlag.Value = false;
         }
 
         public void RegisterModuleSpecificReset(IPeripheral peripheral, uint id)
@@ -120,6 +143,9 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         public GPIO SystemState { get; }
         public GPIO Resets { get; }
 
+        public GPIO FatalAlert { get; }
+        public GPIO FatalConsistencyAlert { get; }
+
         private void ExecuteResetWithSkipped(ICollection<IPeripheral> toSkip)
         {
             // This method is intended to run only as a result of memory access from translated code.
@@ -149,9 +175,19 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             }, unresetable: toSkip);
         }
 
-        private void LifeCycleReset()
+        private void ExecutePeripheralInitiatedResetWithSkipped(ICollection<IPeripheral> toSkip)
         {
-            ExecuteResetWithSkipped(skippedOnLifeCycleReset);
+            if(!machine.SystemBus.TryGetCurrentCPU(out var cpu))
+            {
+                this.Log(LogLevel.Error, "Couldn't find the cpu to reset.");
+                return;
+            }
+
+            machine.RequestResetInSafeState(() =>
+            {
+                cpu.PC = resetPC;
+                this.Log(LogLevel.Info, "Hardware reset complete.");
+            }, unresetable: toSkip);
         }
 
         private void SystemReset()
@@ -187,15 +223,15 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private void DefineRegisters()
         {
             Registers.AlertTest.Define(this, 0x0)
-                .WithTaggedFlag("fatal_fault", 0)
-                .WithTaggedFlag("fatal_cnsty_fault", 1)
+                .WithFlag(0, FieldMode.Write, writeCallback: (_, val) => { if(val) FatalAlert.Blink(); }, name: "fatal_fault")
+                .WithFlag(1, FieldMode.Write, writeCallback: (_, val) => { if(val) FatalConsistencyAlert.Blink(); }, name: "fatal_cnsty_fault")
                 .WithReservedBits(2, 30);
             Registers.ResetRequested.Define(this, 0x5)
                 .WithValueField(0, 4, out resetRequest, name: "VAL")
                 .WithReservedBits(4, 28)
                 .WithChangeCallback((_, __) =>
                     {
-                        if(resetRequest.Value == KMULTIBITBOOL4TRUE)
+                        if(resetRequest.Value == (uint)MultiBitBool4.True)
                         {
                             resetRequest.Value = 0;
                             SoftwareRequestedReset();
@@ -203,10 +239,10 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                     });
             Registers.DeviceResetReason.Define(this, 0x1)
                 .WithFlag(0, out powerOnResetFlag, FieldMode.Read | FieldMode.WriteOneToClear, name: "POR")
-                .WithTaggedFlag("LOW_POWER_EXIT", 1)
+                .WithFlag(1, out lowPowerExitFlag, FieldMode.Read | FieldMode.WriteOneToClear, name: "LOW_POWER_EXIT")
                 .WithFlag(2, out nonDebugModuleResetFlag, FieldMode.Read | FieldMode.WriteOneToClear, name: "NDM_RESET")
                 .WithFlag(3, out softwareResetFlag, FieldMode.Read | FieldMode.WriteOneToClear, name: "SW_RESET")
-                .WithTag("HW_REQ", 4, 4)
+                .WithEnumField(4, 4, out hardwareResetRequest, FieldMode.Read | FieldMode.WriteOneToClear, name: "HW_REQ")
                 .WithReservedBits(8, 24);
             Registers.AlertWriteEnable.Define(this, 0x1)
                 .WithTaggedFlag("EN", 0);
@@ -247,8 +283,10 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
 
         private IValueRegisterField resetRequest;
         private IFlagRegisterField powerOnResetFlag;
+        private IFlagRegisterField lowPowerExitFlag;
         private IFlagRegisterField nonDebugModuleResetFlag;
         private IFlagRegisterField softwareResetFlag;
+        private IEnumRegisterField<HardwareResetReason> hardwareResetRequest;
         private IValueRegisterField softwareControllableResetsWriteEnableMask;
         private readonly ulong resetPC;
         private readonly HashSet<IPeripheral> skippedOnLifeCycleReset;
@@ -256,7 +294,6 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private readonly IPeripheral[] modules;
 
         private const int numberOfModules = 8;
-        private const byte KMULTIBITBOOL4TRUE = 0xA;
 
         public enum GPIOInput
         {
@@ -268,6 +305,14 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             SystemReset,        // Power manager request to assert the rst_sys_n tree.
             ResetCause,         // Power manager indication for why it requested reset, the cause can be low power entry or peripheral issued request.
             PeripheralReset,    // Peripheral reset requests.
+        }
+
+        public enum HardwareResetReason
+        {
+            SystemResetControl = 0b0001,
+            Watchdog = 0b0010,
+            PowerUnstable = 0b0100,
+            Escalation = 0b1000,
         }
 
         private enum Registers

@@ -1,5 +1,5 @@
 ﻿//
-// Copyright (c) 2010-2021 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -9,7 +9,6 @@ using Antmicro.Renode.Core;
 using Antmicro.Renode.Utilities;
 using Antmicro.Renode.Peripherals.Bus;
 using Antmicro.Renode.Core.Structure.Registers;
-using Antmicro.Renode.Logging;
 
 namespace Antmicro.Renode.Peripherals.GPIOPort
 {
@@ -19,6 +18,7 @@ namespace Antmicro.Renode.Peripherals.GPIOPort
         {
             locker = new object();
             IRQ = new GPIO();
+            FatalAlert = new GPIO();
             registers = new DoubleWordRegisterCollection(this, BuildRegisterMap());
             interruptRequest = new bool[numberOfPins];
             interruptEnabled = new bool[numberOfPins];
@@ -38,6 +38,8 @@ namespace Antmicro.Renode.Peripherals.GPIOPort
             {
                 base.Reset();
                 IRQ.Unset();
+                FatalAlert.Unset();
+
                 registers.Reset();
                 for(var i = 0; i < numberOfPins; ++i)
                 {
@@ -103,6 +105,7 @@ namespace Antmicro.Renode.Peripherals.GPIOPort
         public long Size => 0x3C;
 
         public GPIO IRQ { get; }
+        public GPIO FatalAlert { get; }
 
         private Dictionary<long, DoubleWordRegister> BuildRegisterMap()
         {
@@ -126,7 +129,7 @@ namespace Antmicro.Renode.Peripherals.GPIOPort
                     .WithWriteCallback((_, __) => UpdateIRQ())
                 },
                 {(long)Registers.AlertTest, new DoubleWordRegister(this)
-                    .WithTaggedFlag("fatal_fault", 0)
+                    .WithFlag(0, FieldMode.Write, writeCallback: (_, val) => { if(val) FatalAlert.Blink(); }, name: "fatal_fault")
                     .WithIgnoredBits(1, 31)
                 },
                 {(long)Registers.Input, new DoubleWordRegister(this)

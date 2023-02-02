@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2021 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -33,9 +33,18 @@ namespace Antmicro.Renode.Utilities
             return -1;
         }
 
-        public static long Bits(byte b)
+        public static long Bit(byte b)
         {
             return (0x1 << b);
+        }
+
+        public static ulong Bits(int position, int width)
+        {
+            // Force 0 with width = 64 and up because (1UL << 64) is 1
+            var pow2 = width < 64 ? (1UL << width) : 0;
+            var nbits = pow2 - 1;
+            // Same as above
+            return position < 64 ? (nbits << position) : 0;
         }
 
         public static bool IsBitSet(uint reg, byte bit)
@@ -80,6 +89,16 @@ namespace Antmicro.Renode.Utilities
                 mask -= 1u << (position + i);
             }
             reg &= mask;
+        }
+
+        public static void SetBits(ref uint reg, int position, int width)
+        {
+            var mask = 0x0u;
+            for(var i = 0; i < width; i++)
+            {
+                mask += 1u << (position + i);
+            }
+            reg |= mask;
         }
 
         public static void ReplaceBits(ref uint destination, uint source, int width, int destinationPosition = 0, int sourcePosition = 0)
@@ -179,6 +198,11 @@ namespace Antmicro.Renode.Utilities
         public static void UpdateWithShifted(ref ulong reg, ulong newValue, int position, int width)
         {
             UpdateWith(ref reg, newValue << position, position, width);
+        }
+
+        public static void UpdateWithMasked(ref uint reg, uint newValue, uint mask)
+        {
+            reg = (reg & ~mask) | (newValue & mask);
         }
 
         public static void UpdateWith(ref uint reg, uint newValue, int position, int width)
@@ -339,15 +363,26 @@ namespace Antmicro.Renode.Utilities
 
         }
 
+        public static void GetBytesFromValue(byte[] bytes, int offset, ulong val, int typeSize, bool reverse = false)
+        {
+            if(offset + typeSize > bytes.Length)
+            {
+                throw new ArgumentOutOfRangeException("The sum of offset and typeSize can't be greater that length of the bytes array.");
+            }
+
+            int valOffset = 0;
+            for(int i = typeSize - 1; i >= 0; --i)
+            {
+                int byteIndex = offset + (reverse ? typeSize - 1 - i : i);
+                bytes[byteIndex] = (byte)((val >> valOffset) & 0xFF);
+                valOffset += 8;
+            }
+        }
+
         public static byte[] GetBytesFromValue(ulong val, int typeSize, bool reverse = false)
         {
             var result = new byte[typeSize];
-            int offset = 0;
-            for(int i = typeSize - 1; i >= 0; --i)
-            {
-                result[reverse ? typeSize - 1 - i : i] = (byte)((val >> offset) & 0xFF);
-                offset += 8;
-            }
+            GetBytesFromValue(result, 0, val, typeSize, reverse);
             return result;
         }
 
@@ -451,6 +486,15 @@ namespace Antmicro.Renode.Utilities
             return value;
         }
 
+        public static ulong SignExtend(ulong value, int size)
+        {
+            if(value >= (1ul << size - 1))
+            {
+                return 0xFFFFFFFFFFFFFFFF << size | value;
+            }
+            return value;
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static uint CalculateMask(int width, int position)
         {
@@ -461,30 +505,62 @@ namespace Antmicro.Renode.Utilities
             return (1u << width) - 1 << position;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]  
+        public static uint ReverseBitsByByte(uint i)
+        {
+            i = ((i >> 1) & 0x55555555) | ((i & 0x55555555) << 1);
+            i = ((i >> 2) & 0x33333333) | ((i & 0x33333333) << 2);
+            return ((i >> 4) & 0x0F0F0F0F) | ((i & 0x0F0F0F0F) << 4);
+        }
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static uint ReverseBitsByWord(uint i)
+        {
+            i = ReverseBitsByByte(i);
+            return ((i >> 8) & 0x00FF00FF) | ((i & 0x00FF00FF) << 8);
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static byte ReverseBits(byte b)
         {
-            return (byte)(((b << 7) & 0x80) | ((b << 5) & 0x40) | ((b << 3) & 0x20) | ((b << 1) & 0x10) |
-                          ((b >> 1) & 0x08) | ((b >> 3) & 0x04) | ((b >> 5) & 0x02) | ((b >> 7) & 0x01));
+            return (byte)ReverseBitsByByte(b);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static ushort ReverseBits(ushort s)
         {
-            return (ushort)((ReverseBits((byte)s) << 8) | ReverseBits((byte)(s >> 8)));
+            return (ushort)ReverseBitsByWord(s);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static uint ReverseBits(uint s)
+        public static uint ReverseBits(uint i)
         {
-            return (uint)((ReverseBits((byte)s) << 24) | (ReverseBits((byte)(s >> 8)) << 16) |
-                           (ReverseBits((byte)(s >> 16)) << 8) | ReverseBits((byte)(s >> 24)));
+            i = ReverseBitsByWord(i);
+            return (i >> 16) | (i << 16);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static ulong ReverseBits(ulong v)
         {
             return ((ulong)ReverseBits((uint)v) << 32) | ReverseBits((uint)(v >> 32));
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static ushort ReverseBytes(ushort v)
+        {
+            return (ushort)((v << 8) | (v >> 8));
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static uint ReverseBytes(uint v)
+        {
+            return ((uint)ReverseBytes((ushort)v) << 16) | ReverseBytes((ushort)(v >> 16));
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static ulong ReverseBytes(ulong v)
+        {
+            return ((ulong)ReverseBytes((uint)v) << 32) | ReverseBytes((uint)(v >> 32));
         }
 
         // TODO: enumerator + lazy calculation

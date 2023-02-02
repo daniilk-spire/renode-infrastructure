@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -10,20 +10,18 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Linq;
 using Antmicro.Renode.Core;
+using Antmicro.Renode.Peripherals.Bus;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals;
 using System.IO;
 using Dynamitey;
 using System.Text;
 using System.Runtime.InteropServices;
-using System.Linq.Expressions;
 using System.Drawing;
 using Antmicro.Renode.Network;
 using System.Diagnostics;
 using Antmicro.Renode.Core.Structure.Registers;
 using System.Threading;
-using Antmicro.Renode.Debugging;
-using Antmicro.Renode.Exceptions;
 
 namespace Antmicro.Renode.Utilities
 {
@@ -104,6 +102,13 @@ namespace Antmicro.Renode.Utilities
             return t.GetMethods(DefaultBindingFlags);
         }
 
+        public static IEnumerable<MethodWithAttribute<T>> GetMethodsWithAttribute<T>(this Type type) where T : Attribute
+        {
+            return type.GetAllMethods()
+                .Select(method => new MethodWithAttribute<T>(method, (T)method.GetCustomAttribute(typeof(T), true)))
+                .Where(m => m.Attribute != null);
+        }
+
         public static IEnumerable<FieldInfo> GetAllFields(this Type t, bool recursive = true)
         {
             if(t == null)
@@ -118,7 +123,7 @@ namespace Antmicro.Renode.Utilities
         }
 
 
-        public static byte[] ReadBytes(this Stream stream, int count)
+        public static byte[] ReadBytes(this Stream stream, int count, bool throwIfEndOfStream = false)
         {
             var buffer = new byte[count];
             var read = 0;
@@ -139,6 +144,13 @@ namespace Antmicro.Renode.Utilities
                 }
                 read += readInThisIteration;
             }
+
+            if(throwIfEndOfStream && read < count)
+            {
+                throw new EndOfStreamException(
+                    $"End of stream encountered. {count}B were requested but only {read}B could be read"
+                );
+            }
             return buffer;
         }
 
@@ -149,7 +161,17 @@ namespace Antmicro.Renode.Utilities
 
         public static int MB(this int value)
         {
-            return 1024 * 1024 * value;
+            return 1024 * value.KB();
+        }
+        
+        public static ulong GB(this int value)
+        {
+            return 1024 * (ulong)value.MB();
+        }
+        
+        public static ulong TB(this int value)
+        {
+            return 1024 * value.GB();
         }
 
         /// <summary>
@@ -385,9 +407,45 @@ namespace Antmicro.Renode.Utilities
             int idx = 0;
             if(source.Any())
             {
-                return source.Aggregate((x, y) => x + separator + y + (limitPerLine != 0 && (++idx % limitPerLine == 0) ? "\n" : string.Empty));
+                return source.Aggregate((x, y) => x + separator + (limitPerLine != 0 && (++idx % limitPerLine == 0) ? "\n" : string.Empty) + y);
             }
             return String.Empty;
+        }
+
+        public static byte[] HexStringToByteArray(string hexString, bool reverse = false)
+        {
+            if(hexString.Length % 2 != 0)
+            {
+                throw new FormatException($"The length of hex string ({hexString.Length}) is not a multiple of 2.");
+            }
+
+            byte[] bytes = new byte[hexString.Length / 2];
+            for(int i = 0; i < bytes.Length; i++)
+            {
+                int byteIndex = reverse ? bytes.Length - 1 - i : i;
+                bytes[byteIndex] = Convert.ToByte(hexString.Substring(i * 2, 2), 16);
+            }
+            return bytes;
+        }
+
+        // Can't use the `sizeof` in the generic code unless it is restricted to unmanaged types, and that's possible only in C#7.0 and newer.
+        // Hence the `elementSize` argument - otherwise it would be replaced with a `sizeof(T)`
+        public static bool TryParseHexString<T>(string hexString, out T[] outArray, int elementSize, bool endiannessSwap=false)
+        {
+            var byteArray = HexStringToByteArray(hexString);
+            var byteLength = byteArray.Length;
+            if(byteLength % elementSize != 0)
+            {
+                outArray = new T[0];
+                return false;
+            }
+            outArray = new T[byteLength / elementSize];
+            if(endiannessSwap)
+            {
+                EndiannessSwapInPlace(byteArray, elementSize);
+            }
+            Buffer.BlockCopy(byteArray, 0, outArray, 0, byteLength);
+            return true;
         }
 
         // MoreLINQ - Extensions to LINQ to Objects
@@ -853,6 +911,18 @@ namespace Antmicro.Renode.Utilities
                  | (value & 0x000000FF) << 24;
         }
 
+        public static ulong SwapBytesULong(ulong value)
+        {
+            return (value & 0xFF00000000000000) >> 56
+                 | (value & 0x00FF000000000000) >> 40
+                 | (value & 0x0000FF0000000000) >> 24
+                 | (value & 0x000000FF00000000) >> 8
+                 | (value & 0x00000000FF000000) << 8
+                 | (value & 0x0000000000FF0000) << 24
+                 | (value & 0x000000000000FF00) << 40
+                 | (value & 0x00000000000000FF) << 56;
+        }
+
         public static T SwapBytes<T>(T value)
         {
             var type = typeof(T);
@@ -897,6 +967,14 @@ namespace Antmicro.Renode.Utilities
             }
 
             return true;
+        }
+
+        public static uint EndiannessSwap(uint value)
+        {
+            var temp = new byte[sizeof(uint)];
+            Misc.ByteArrayWrite(0, value, temp);
+            Misc.EndiannessSwapInPlace(temp, sizeof(uint));
+            return Misc.ByteArrayRead(0, temp);
         }
 
         public static bool CalculateUnitSuffix(double value, out double newValue, out string unit)
@@ -1042,17 +1120,17 @@ namespace Antmicro.Renode.Utilities
                 mi.GetParameters().Select(x => x.ParameterType).SequenceEqual(delegateMethodInfo.GetParameters().Select(x => x.ParameterType));
         }
 
-        public static int Clamp(this int value, int min, int max)
+        public static T Clamp<T>(this T @this, T min, T max) where T : IComparable
         {
-            if(value < min)
+            if(@this.CompareTo(min) < 0)
             {
                 return min;
             }
-            if(value > max)
+            else if(@this.CompareTo(max) > 0)
             {
                 return max;
             }
-            return value;
+            return @this;
         }
 
         public static string[] Split(this string value, int size)
@@ -1134,15 +1212,22 @@ namespace Antmicro.Renode.Utilities
             return result;
         }
 
-        public static DateTime With(this DateTime @this, int? year = null, int? month = null, int? day = null, int? hour = null, int? minute = null, int? second = null)
+        public static DateTime With(this DateTime @this, int? year = null, int? month = null, int? day = null, int? hour = null, int? minute = null, int? second = null, double? millisecond = null)
         {
-            return new DateTime(
+            var dateTime = new DateTime(
                 year ?? @this.Year,
                 month ?? @this.Month,
                 day ?? @this.Day,
                 hour ?? @this.Hour,
                 minute ?? @this.Minute,
                 second ?? @this.Second);
+
+            if(millisecond != null)
+            {
+                dateTime = dateTime.AddMilliseconds(millisecond.Value);
+            }
+
+            return dateTime;
         }
 
         public static int EnqueueRange<T>(this Queue<T> @this, IEnumerable<T> data, int? limit = null)
@@ -1210,6 +1295,11 @@ namespace Antmicro.Renode.Utilities
         public static string StripNonSafeCharacters(this string input)
         {
             return Encoding.UTF8.GetString(Encoding.UTF8.GetBytes(input).Where(x => (x >= 32 && x <= 126) || (x == '\n')).ToArray());
+        }
+
+        public static string SurroundWith(this string str, string surrounding)
+        {
+            return $"{surrounding}{str}{surrounding}";
         }
 
         // allocate file of a given name
@@ -1342,6 +1432,27 @@ namespace Antmicro.Renode.Utilities
             return true;
         }
 
+        public static void FillByteArrayWithArray(byte[] destinationArray, byte[] sourceArray)
+        {
+            var srcLength = sourceArray.Length;
+            var dstLength = destinationArray.Length;
+            if(srcLength >= dstLength)
+            {
+                Buffer.BlockCopy(sourceArray, 0, destinationArray, 0, dstLength);
+            }
+            else
+            {
+                var currentIndex = 0;
+                while((currentIndex + srcLength) < dstLength)
+                {
+                    Buffer.BlockCopy(sourceArray, 0, destinationArray, currentIndex, srcLength);
+                    currentIndex += srcLength;
+                }
+                var remindingElements = dstLength % srcLength;
+                Buffer.BlockCopy(sourceArray, 0, destinationArray, currentIndex, remindingElements);
+            }
+        }
+
         public static int CountTrailingZeroes(uint value)
         {
             int count = 0;
@@ -1356,6 +1467,144 @@ namespace Antmicro.Renode.Utilities
             }
             return count;
         }
+
+        public static byte[] AsBytes(uint[] data)
+        {
+            var outLength = data.Length * sizeof(uint);
+            var dataAsBytes = new byte[outLength];
+            Buffer.BlockCopy(data, 0, dataAsBytes, 0, outLength);
+            return dataAsBytes;
+        }
+
+        public static T ReadStruct<T>(this Stream @this) where T : struct
+        {
+            var structSize = Marshal.SizeOf(typeof(T));
+            return @this.ReadBytes(structSize).ToStruct<T>();
+        }
+
+        public static T ToStruct<T>(this byte[] @this) where T : struct
+        {
+            var size = @this.Length;
+            var bufferPointer = Marshal.AllocHGlobal(size);
+            Marshal.Copy(@this, 0, bufferPointer, size);
+            var result = (T)Marshal.PtrToStructure(bufferPointer, typeof(T));
+            Marshal.FreeHGlobal(bufferPointer);
+            return result;
+        }
+
+        public static bool TryGetNext<T>(this IEnumerator<T> @this, out T element)
+        {
+            element = default(T);
+            if(@this.MoveNext())
+            {
+                element = @this.Current;
+                return true;
+            }
+            return false;
+        }
+
+        public static byte ReadWithOffset<T>(this T @this, long register, int offset, bool msbFirst = false) where T : IRegisterCollection
+        {
+            int innerOffset;
+            uint outputValue;
+            if(@this is ByteRegisterCollection)
+            {
+                ByteRegisterCollection byteRegisterCollection = @this as ByteRegisterCollection;
+                innerOffset = 0;
+                outputValue = (uint)byteRegisterCollection.Read(register);
+            }
+            else if(@this is WordRegisterCollection)
+            {
+                WordRegisterCollection wordRegisterCollection = @this as WordRegisterCollection;
+                innerOffset = offset % 2;
+                if(msbFirst)
+                {
+                    innerOffset = 1 - innerOffset;
+                }
+                outputValue = (uint)wordRegisterCollection.Read(register + offset / 2);
+            }
+            else if(@this is DoubleWordRegisterCollection)
+            {
+                DoubleWordRegisterCollection doubleWordRegisterCollection = @this as DoubleWordRegisterCollection;
+                innerOffset = offset % 4;
+                if(msbFirst)
+                {
+                    innerOffset = 3 - innerOffset;
+                }
+                outputValue = (uint)doubleWordRegisterCollection.Read(register + offset / 4);
+            }
+            else
+            {
+                throw new Exception("unreachable code");
+            }
+            var mask = 0xFFUL << (innerOffset * 8);
+            return (byte)((outputValue & mask) >> (innerOffset * 8));
+        }
+
+        public static void WriteWithOffset<T>(this T @this, long register, int offset, byte value, bool msbFirst = false) where T : IRegisterCollection
+        {
+            int innerOffset;
+            uint previousValue;
+            Action<uint> writeFunction;
+            if(@this is ByteRegisterCollection)
+            {
+                ByteRegisterCollection byteRegisterCollection = @this as ByteRegisterCollection;
+                innerOffset = 0;
+                previousValue = (uint)byteRegisterCollection.Read(register);
+                writeFunction = (data) => byteRegisterCollection.Write(register, (byte)data);
+            }
+            else if(@this is WordRegisterCollection)
+            {
+                WordRegisterCollection wordRegisterCollection = @this as WordRegisterCollection;
+                innerOffset = offset % 2;
+                if(msbFirst)
+                {
+                    innerOffset = 1 - innerOffset;
+                }
+                previousValue = (uint)wordRegisterCollection.Read(register + offset / 2);
+                writeFunction = (data) => wordRegisterCollection.Write(register + offset / 2, (ushort)data);
+            }
+            else if(@this is DoubleWordRegisterCollection)
+            {
+                DoubleWordRegisterCollection doubleWordRegisterCollection = @this as DoubleWordRegisterCollection;
+                innerOffset = offset % 4;
+                if(msbFirst)
+                {
+                    innerOffset = 3 - innerOffset;
+                }
+                previousValue = (uint)doubleWordRegisterCollection.Read(register + offset / 4);
+                writeFunction = (data) => doubleWordRegisterCollection.Write(register + offset / 4, (uint)data);
+            }
+            else
+            {
+                throw new Exception("unreachable code");
+            }
+            var mask = 0xFFU << (innerOffset * 8);
+            var newValue = (previousValue & ~mask) | ((uint)value << (innerOffset * 8));
+            writeFunction((uint)newValue);
+        }
+
+        public static IEnumerable<T> Iterate<T>(Func<T> function)
+        {
+            while(true)
+            {
+                yield return function();
+            }
+        }
+
+        public static DateTime UnixEpoch = new DateTime(1970, 1, 1);
+    }
+
+    public class MethodWithAttribute<T> where T : Attribute
+    {
+        public MethodWithAttribute(MethodInfo method, T attribute)
+        {
+            Method = method;
+            Attribute = attribute;
+        }
+
+        public MethodInfo Method { get; }
+        public T Attribute { get; }
     }
 }
 

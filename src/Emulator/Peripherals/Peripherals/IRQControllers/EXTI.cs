@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -22,10 +22,11 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
     /// This model will accept any number of input pins, but keep in mind that currently System
     /// Configuration Controller (SYSCFG) is able to handle only 16x16 pins in total.
     /// </summary>
-    public class EXTI :  IDoubleWordPeripheral, IKnownSize, IIRQController, INumberedGPIOOutput
+    public class EXTI : IDoubleWordPeripheral, IKnownSize, IIRQController, INumberedGPIOOutput
     {
-        public EXTI(int numberOfOutputLines = 14)
+        public EXTI(int numberOfOutputLines = 14, int firstDirectLine = DefaultFirstDirectLine)
         {
+            this.firstDirectLine = firstDirectLine;
             var innerConnections = new Dictionary<int, IGPIO>();
             for(var i = 0; i < numberOfOutputLines; ++i)
             {
@@ -37,44 +38,23 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
 
         public void OnGPIO(int number, bool value)
         {
-            // Theoretically there could be up to 256 GPIOs connected to 16 EXTI lines - 16 GPIOs per port.
-            // GPIOs are connected in this order: 0 indexed to EXTI0 line, 1 -> EXTI1 etc.
-            // If we get `number` higher than 15, it means we will address other 7 EXTI lines
-            // which are connected to PVD, RTC etc.
-            //
-            // EXTI map:
-            // `number = 0` -> PA0, PB0, PC0 ... (EXTI0 - Interrupt 0)
-            // `number = 1` -> PA1, PB1, PC1 ... (EXTI1 - Interrupt 1)
-            // ...
-            // `number = 4` -> PA4, PB4, PC4 ... (EXTI4 - Interrupt 4)
-            // `number = 5` -> PA5, PB5, PC5 ... (EXTI5 - Interrupt 5)
-            // `number = 6` -> PA6, PB6, PC6 ... (EXTI6 - Interrupt 5)
-            // ...
-            // `number = 14` -> PA14, PB14, PC14 ... (EXTI14 - Interrupt 6)
-            // `number = 15` -> PA15, PB15, PC15 ... (EXTI15 - Interrupt 6)
-            // `number = 16` -> PVD (EXTI16 - Interrupt 7)
-            // `number = 17` -> RTC Alarm event (EXTI17 - Interrupt 8)
-            // ...
-            // `number = 22` -> RTC Wakeup event (EXTI22 - Interrupt 13)
-
-            if(number > MaxEXTILines)
+            if(number >= NumberOfLines)
             {
-                this.Log(LogLevel.Error, "Given value: {0} exceeds maximum EXTI lines: {1}", number, MaxEXTILines);
+                this.Log(LogLevel.Error, "GPIO number {0} is out of range [0; {1})", number, NumberOfLines);
                 return;
             }
             var lineNumber = (byte)number;
-            var irqNumber = gpioMapping[lineNumber];
 
-            if(number == 23 && value)
+            if((number >= firstDirectLine) && value)
             {
                 pending |= (1u << lineNumber);
-                Connections[irqNumber].Set();
+                Connections[lineNumber].Set();
                 return;
             }
-            if(number == 23 && !value)
+            if((number >= firstDirectLine) && !value)
             {
                 pending &= ~(1u << lineNumber);
-                Connections[irqNumber].Unset();
+                Connections[lineNumber].Unset();
                 return;
             }
 
@@ -83,7 +63,7 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
                || (BitHelper.IsBitSet(fallingTrigger, lineNumber) && !value))) // falling edge
             {
                 pending |= (1u << lineNumber);
-                Connections[irqNumber].Set();
+                Connections[lineNumber].Set();
             }
         }
 
@@ -131,9 +111,14 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
                 var bitsToSet = allNewAndOld ^ softwareInterrupt;
                 BitHelper.ForeachActiveBit(bitsToSet, (x) =>
                 {
+                    if(x >= NumberOfLines)
+                    {
+                        this.Log(LogLevel.Warning, "Software interrupt {0} is out of range [0; {1})", x, NumberOfLines);
+                        return;
+                    }
                     if(BitHelper.IsBitSet(interruptMask, x))
                     {
-                        Connections[gpioMapping[x]].Set();
+                        Connections[x].Set();
                     }
                 });
                 break;
@@ -142,7 +127,12 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
                 softwareInterrupt &= ~value;
                 BitHelper.ForeachActiveBit(value, (x) =>
                 {
-                    Connections[gpioMapping[x]].Unset();
+                    if(x >= NumberOfLines)
+                    {
+                        this.Log(LogLevel.Warning, "Cleared interrupt {0} is out of range [0; {1})", x, NumberOfLines);
+                        return;
+                    }
+                    Connections[x].Unset();
                 });
                 break;
             default:
@@ -175,7 +165,7 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
 
         public IReadOnlyDictionary<int, IGPIO> Connections { get; }
 
-        private static readonly int[] gpioMapping = { 0, 1, 2, 3, 4, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 7, 8, 9, 10, 11, 12, 13, 23 };
+        public long NumberOfLines => Connections.Count;
 
         private uint interruptMask;
         private uint eventMask;
@@ -184,7 +174,10 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
         private uint pending;
         private uint softwareInterrupt;
 
-        private const int MaxEXTILines = 32;
+        private readonly int firstDirectLine;
+        // We treat lines above 23 as direct by default for backwards compatibility with
+        // the old behavior of the EXTI model.
+        private const int DefaultFirstDirectLine = 23;
 
         private enum Registers
         {

@@ -8,6 +8,7 @@
 
 using System;
 using System.Runtime.InteropServices;
+using Microsoft.CSharp.RuntimeBinder;
 using Antmicro.Renode.Peripherals.Bus;
 using Antmicro.Renode.Utilities;
 using System.Linq;
@@ -348,6 +349,7 @@ namespace Antmicro.Renode.Peripherals.Memory
             }
             SegmentSize = reader.ReadInt32();
             size = reader.ReadInt64();
+            ResetByte = reader.ReadByte();
             if(emptyCtorUsed)
             {
                 Init();
@@ -374,12 +376,11 @@ namespace Antmicro.Renode.Peripherals.Memory
         {
             var globalStopwatch = Stopwatch.StartNew();
             var realSegmentsCount = 0;
-            // magic
+
             writer.Write(Magic);
-            // saving size of the memory segment
             writer.Write(SegmentSize);
-            // saving size of the memory
             writer.Write(size);
+            writer.Write(ResetByte);
             byte[][] outputBuffers = new byte[segments.Length][];
             Parallel.For(0, segments.Length, i =>
             {
@@ -531,8 +532,15 @@ namespace Antmicro.Renode.Peripherals.Memory
             {
                 foreach(var regPoint in registrationPoints)
                 {
-                    //it's dynamic to avoid cyclic dependency to TranslationCPU
-                    ((dynamic)cpu).InvalidateTranslationBlocks(new IntPtr(regPoint + start), new IntPtr(regPoint + start + length));
+                    try
+                    {
+                        //it's dynamic to avoid cyclic dependency to TranslationCPU
+                        ((dynamic)cpu).InvalidateTranslationBlocks(new IntPtr(regPoint + start), new IntPtr(regPoint + start + length));
+                    }
+                    catch(RuntimeBinderException)
+                    {
+                        // CPU does not implement `InvalidateTranslationBlocks`, there is not much we can do
+                    }
                 }
             }
         }

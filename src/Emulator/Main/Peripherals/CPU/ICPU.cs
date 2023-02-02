@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2018 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -9,21 +9,19 @@
 using System;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Peripherals.Bus;
+using Antmicro.Renode.Time;
 using Antmicro.Renode.Utilities;
+using System.Collections.Generic;
 
 namespace Antmicro.Renode.Peripherals.CPU
 {
     public interface ICPU : IPeripheral, IHasOwnLife
     {
-        void MapMemory(IMappedSegment segment);
-        void UnmapMemory(Range range);
-        void SetPageAccessViaIo(ulong address);
-        void ClearPageAccessViaIo(ulong address);
+        uint Id { get; }
         string Model { get; }
         RegisterValue PC { get; set; }
         bool IsHalted { get; set; }
         SystemBus Bus { get; }
-        void UpdateContext();
         /// <summary>
         /// Returns true if the thread calling this property is possesed
         /// by the object.
@@ -31,7 +29,13 @@ namespace Antmicro.Renode.Peripherals.CPU
         bool OnPossessedThread { get; }
         ulong ExecutedInstructions {get;}
         void SyncTime();
-        void EnableProfiling();
+        event Action<HaltArguments> Halted;
+        TimeHandle TimeHandle { get; }
+
+        ulong Step(int count = 1, bool? blocking = null);
+        ExecutionMode ExecutionMode { get; set; }
+
+        ELFSharp.ELF.Endianess Endianness { get; }
     }
 
     public static class ICPUExtensions

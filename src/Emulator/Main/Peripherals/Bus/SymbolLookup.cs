@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2018 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -164,7 +164,14 @@ namespace Antmicro.Renode.Core
         /// All SymbolLookup objects.
         /// </summary>
         static private readonly HashSet<SymbolLookup> allSymbolSets = new HashSet<SymbolLookup>();
-        static private readonly string[] armSpecificSymbolNames = { "$a", "$d", "$t" };
+        // Those symbols have a special meaning
+        // $a - marks ARM code segments
+        // $d - marks data segments
+        // $t - marks THUMB code segments
+        // $x - marks RISC-V code segments
+        // Sources: https://simplemachines.it/doc/aaelf.pdf section 4.5.6, https://www.mail-archive.com/bug-binutils@gnu.org/msg38960.html
+        // All of those symbols can be used by the disassembler when reading the binary and are not needed during the execution
+        static private readonly string[] excludedSymbolNames = { "$a", "$d", "$t", "$x" };
         static private readonly SymbolType[] excludedSymbolTypes = { SymbolType.File };
 
         private void LoadELF<T>(ELF<T> elf, bool useVirtualAddress) where T : struct
@@ -177,7 +184,10 @@ namespace Antmicro.Renode.Core
             var thumb = elf.Machine == ELFSharp.ELF.Machine.ARM;
             var symtab = (SymbolTable<T>)symtabSection;
 
-            var elfSymbols = symtab.Entries.Where(x => !armSpecificSymbolNames.Contains(x.Name)).Where(x => !excludedSymbolTypes.Contains(x.Type))
+            // All names on the excluded list are valid C identifiers, so someone may name their function like that
+            // To guard against it we also check if the type of this symbol is not specified
+            var elfSymbols = symtab.Entries.Where(x => !(excludedSymbolNames.Contains(x.Name) && x.Type == SymbolType.NotSpecified))
+                                .Where(x => !excludedSymbolTypes.Contains(x.Type))
                                 .Where(x => x.PointedSectionIndex != (uint)SpecialSectionIndex.Undefined).Select(x => new Symbol(x, thumb));
             InsertSymbols(elfSymbols);
             EntryPoint = elf.GetEntryPoint();
@@ -286,6 +296,7 @@ namespace Antmicro.Renode.Core
             {
                 var sortedIntervals = SelectDistinctViaImportance(newSymbols).ToArray();
                 Array.Sort(sortedIntervals, comparer);
+                sortedIntervals = DropUnusedLabels(sortedIntervals).ToArray();
 
                 if(Count > 0)
                 {
@@ -398,6 +409,42 @@ namespace Antmicro.Renode.Core
             /// </summary>
             /// <value>The count.</value>
             public int Count { get; private set; }
+
+            /// <summary>
+            /// Filters out the symbols that are just labels and are also covered by non-label symbols.
+            /// </summary>
+            /// <param name="symbols">Sorted collection of symbols.</param>
+            private IEnumerable<Symbol> DropUnusedLabels(IEnumerable<Symbol> symbols)
+            {
+                Symbol currentSymbol = null;
+                foreach(var symbol in symbols)
+                {
+                    // only include labels that are not part of other symbols
+                    if(!symbol.IsLabel)
+                    {
+                        if(currentSymbol == null || !currentSymbol.Contains(symbol))
+                        {
+                            // we advance currentSymbol only if we're in topmost (largest) symbol of the stack.
+                            // The reason is that it will definitely contain all smaller ones and we will not miss this situation:
+                            //
+                            //  aaaaaa  i
+                            // xxxxxxxxxxxxx
+                            //
+                            // in which `i` is not contained by `a`, but is contained by `x`.
+                            currentSymbol = symbol;
+                        }
+                        yield return symbol;
+                    }
+                    else
+                    {
+                        // label
+                        if(currentSymbol == null || !currentSymbol.Contains(symbol))
+                        {
+                            yield return symbol;
+                        }
+                    }
+                }
+            }
 
             /// <summary>
             /// Consumes whole cake from provider

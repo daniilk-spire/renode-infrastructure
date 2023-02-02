@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2018 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -125,9 +125,13 @@ namespace Antmicro.Renode.HostInterfaces.Network
             {
                 try
                 {
-                    if(await deviceFile.ReadAsync(buffer, 0, buffer.Length, cts.Token) > 0)
+                    int bytesRead = await deviceFile.ReadAsync(buffer, 0, buffer.Length, cts.Token);
+
+                    if(bytesRead > 0)
                     {
-                        if(!Misc.TryCreateFrameOrLogWarning(this, buffer, out var frame, addCrc: true))
+                        byte[] packet = new byte[bytesRead];
+                        Array.Copy(buffer, packet, bytesRead);
+                        if(!Misc.TryCreateFrameOrLogWarning(this, packet, out var frame, addCrc: true))
                         {
                             return;
                         }
@@ -155,7 +159,9 @@ namespace Antmicro.Renode.HostInterfaces.Network
         private void Init()
         {
             var interfaceNameOrPath = originalInterfaceNameOrPath;
-            if(!Directory.Exists("/Library/Extensions/tap.kext/"))
+            // (1) check if there is an installed kernel extension
+            // (2) there can still be an extension but loaded on demand - Tunnelblick does that, but we won't see anything in the Extensions folder
+            if(!Directory.Exists("/Library/Extensions/tap.kext/") && !File.Exists("/dev/tap0"))
             {
                 this.Log(LogLevel.Warning, "No TUNTAP kernel extension found, running in dummy mode.");
                 MAC = EmulationManager.Instance.CurrentEmulation.MACRepository.GenerateUniqueMAC();
@@ -163,18 +169,35 @@ namespace Antmicro.Renode.HostInterfaces.Network
             }
             if(!File.Exists(interfaceNameOrPath))
             {
-                var tapDevicePath = ConfigurationManager.Instance.Get<string>("tap", "tap-device-path", Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+                var tapDevicePath = ConfigurationManager.Instance.Get<String>("tap", "tap-device-path", "/dev");
                 interfaceNameOrPath = Path.Combine(tapDevicePath, interfaceNameOrPath);
             }
 
-            deviceFile = File.Open(interfaceNameOrPath, FileMode.Open, FileAccess.ReadWrite);
-
+            try
+            {
+                deviceFile = File.Open(interfaceNameOrPath, FileMode.Open, FileAccess.ReadWrite);
+            }
+            catch(FileNotFoundException)
+            {
+                throw new RecoverableException($"The requested tap device file at path: {interfaceNameOrPath} was not found.");
+            }
+            catch(UnauthorizedAccessException)
+            {
+                throw new RecoverableException($"Failed to open the requested tap device: {interfaceNameOrPath} due to the lack of permissions. Please make sure that Renode is given a read and write permissions on this file.");
+            }
             // let's find out to what interface the character device file belongs
             var deviceType = new UnixFileInfo(interfaceNameOrPath).DeviceType;
             var majorNumber = deviceType >> 24;
             var minorNumber = deviceType & 0xFFFFFF;
             this.DebugLog($"Opening TAP device with major number: {majorNumber} and minor number: {minorNumber}");
-            networkInterface = NetworkInterface.GetAllNetworkInterfaces().Single(x => x.Name == "tap" + minorNumber);
+            try
+            {
+                networkInterface = NetworkInterface.GetAllNetworkInterfaces().Single(x => x.Name == "tap" + minorNumber);
+            }
+            catch(InvalidOperationException)
+            {
+                throw new RecoverableException($"TAP device {interfaceNameOrPath} was not found among network devices.");
+            }
             MAC = (MACAddress)networkInterface.GetPhysicalAddress();
         }
 
@@ -197,7 +220,7 @@ namespace Antmicro.Renode.HostInterfaces.Network
         private readonly string originalInterfaceNameOrPath;
 
         private static readonly TimeSpan GracePeriod = TimeSpan.FromSeconds(1);
-        private const int Mtu = 1500;
+        private const int Mtu = 1522;
     }
 }
 #endif

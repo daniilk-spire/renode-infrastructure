@@ -81,6 +81,11 @@ namespace Antmicro.Renode.Time
             return FromTicks((ulong)(v * TimeInterval.TicksPerSecond));
         }
 
+        public static TimeInterval FromSeconds(double v)
+        {
+            return FromTicks((ulong)(v * TimeInterval.TicksPerSecond));
+        }
+
         public static TimeInterval FromMinutes(ulong v)
         {
             return FromSeconds(v * 60);
@@ -216,11 +221,10 @@ namespace Antmicro.Renode.Time
             }
         }
 
-        public ulong Ticks { get { return ticks; } }
-        public double TotalSeconds { get { return ticks / (double)TicksPerSecond; } }
-        public double TotalMilliseconds { get { return ticks / (double)TicksPerMillisecond; }}
-
-        public ulong InMicroseconds { get { return ticks / TicksPerMicrosecond; } }
+        public ulong Ticks => ticks;
+        public ulong TotalMicroseconds => ticks / TicksPerMicrosecond;
+        public double TotalMilliseconds => ticks / (double)TicksPerMillisecond;
+        public double TotalSeconds => ticks / (double)TicksPerSecond;
 
         public const ulong TicksPerSecond = TicksPerMicrosecond * 1000000;
         public const ulong TicksPerMillisecond = TicksPerMicrosecond * 1000;

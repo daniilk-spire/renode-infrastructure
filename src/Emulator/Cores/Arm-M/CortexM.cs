@@ -21,7 +21,7 @@ using Machine = Antmicro.Renode.Core.Machine;
 
 namespace Antmicro.Renode.Peripherals.CPU
 {
-    public partial class CortexM : Arm, IControllableCPU
+    public partial class CortexM : Arm
     {
         public CortexM(string cpuType, Machine machine, NVIC nvic, uint id = 0, Endianess endianness = Endianess.LittleEndian) : base(cpuType, machine, id, endianness)
         {
@@ -34,12 +34,6 @@ namespace Antmicro.Renode.Peripherals.CPU
             nvic.AttachCPU(this);
         }
 
-        public override void Start()
-        {
-            InitPCAndSP();
-            base.Start();
-        }
-
         public override void Reset()
         {
             pcNotInitialized = true;
@@ -47,10 +41,10 @@ namespace Antmicro.Renode.Peripherals.CPU
             base.Reset();
         }
 
-        public override void Resume()
+        protected override void OnResume()
         {
             InitPCAndSP();
-            base.Resume();
+            base.OnResume();
         }
 
         public override string Architecture { get { return "arm-m"; } }
@@ -120,12 +114,12 @@ namespace Antmicro.Renode.Peripherals.CPU
             }
         }
 
-        void IControllableCPU.InitFromElf(IELF elf)
+        public override void InitFromElf(IELF elf)
         {
             // do nothing
         }
 
-        void IControllableCPU.InitFromUImage(UImage uImage)
+        public override void InitFromUImage(UImage uImage)
         {
             // do nothing
         }

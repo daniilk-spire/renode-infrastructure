@@ -1,19 +1,15 @@
 //
-// Copyright (c) 2010-2021 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
 //
 using System;
-using System.Globalization;
 using System.Linq;
 using System.Collections.Generic;
-using System.Security.Cryptography;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure.Registers;
-using Antmicro.Renode.Debugging;
 using Antmicro.Renode.Exceptions;
-using Antmicro.Renode.Peripherals.Bus;
 using Antmicro.Renode.Peripherals.MemoryControllers;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Utilities;
@@ -45,6 +41,9 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 destinations.Add(Destination.OTBN, otbn);
             }
             OperationDoneIRQ = new GPIO();
+            FatalAlert = new GPIO();
+            RecoverableAlert = new GPIO();
+
             random = new Random(randomSeed);
             sealingSoftwareBinding = new byte[MultiRegistersCount * 4];
             attestationSoftwareBinding = new byte[MultiRegistersCount * 4];
@@ -89,6 +88,8 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         {
             base.Reset();
 
+            FatalAlert.Unset();
+            RecoverableAlert.Unset();
             Array.Clear(sealingSoftwareBinding, 0, sealingSoftwareBinding.Length);
             Array.Clear(attestationSoftwareBinding, 0, attestationSoftwareBinding.Length);
             Array.Clear(salt, 0, salt.Length);
@@ -99,31 +100,24 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
 
         public GPIO OperationDoneIRQ { get; }
 
-        private static IEnumerable<byte> ParseHexstring(string value)
-        {
-            var chars = value.AsEnumerable(); 
-            if(value.StartsWith("0x"))
-            {
-                chars = chars.Skip(2);
-            }
-            var i = value.Length % 2;
-            return chars.GroupBy(c => i++ / 2).Select(c => byte.Parse(string.Join("", c), NumberStyles.HexNumber));
-        }
+        public GPIO FatalAlert { get; }
+        public GPIO RecoverableAlert { get; }
 
         static private byte[] ConstructorParseHexstringArgument(string fieldName, string value, int expectedLength)
         {
             byte[] field;
+            var lengthInBytes = value.Length / 2;
+            if(lengthInBytes != expectedLength)
+            {
+                throw new ConstructionException($"Expected `{fieldName}`'s size is {expectedLength} bytes, got {lengthInBytes}");
+            }
             try
             {
-                field = ParseHexstring(value).ToArray();
+                field = Misc.HexStringToByteArray(value);
             }
-            catch(FormatException)
+            catch
             {
                 throw new ConstructionException($"Could not parse `{fieldName}`: Expected hexstring, got: \"{value}\"");
-            }
-            if(field.Length != expectedLength)
-            {
-                throw new ConstructionException($"Expected `{fieldName}`'s size is {expectedLength} bytes, got {field.Length}");
             }
             return field;
         }
@@ -238,7 +232,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private void AdvanceState()
         {
             IEnumerable<byte> data;
-            
+
             switch(state.Value)
             {
                 case WorkingState.Reset:
@@ -316,8 +310,8 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 .WithWriteCallback((_, __) => UpdateInterrupts());
 
             Registers.AlertTest.Define(this)
-                .WithTaggedFlag("fatal_fault_err", 0) // FieldMode.Write
-                .WithTaggedFlag("recov_operation_err", 1) // FieldMode.Write
+                .WithFlag(0, FieldMode.Write, writeCallback: (_, val) => { if(val) FatalAlert.Blink(); }, name: "fatal_fault_err") // FieldMode.Write
+                .WithFlag(1, FieldMode.Write, writeCallback: (_, val) => { if(val) RecoverableAlert.Blink(); }, name: "recov_operation_err") // FieldMode.Write
                 .WithIgnoredBits(2, 30);
 
             Registers.ConfigurationWriteEnable.Define(this, 0x1)

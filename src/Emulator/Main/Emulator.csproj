@@ -173,7 +173,11 @@
     <Compile Include="Core\Structure\IRegistrationPoint.cs" />
     <Compile Include="Peripherals\Bus\IBusRegistered.cs" />
     <Compile Include="Peripherals\Bus\BusRegistered.cs" />
+    <Compile Include="Peripherals\Bus\IBusController.cs" />
+    <Compile Include="Peripherals\Bus\BusAccessPrivileges.cs" />
     <Compile Include="Peripherals\Bus\SystemBus.cs" />
+    <Compile Include="Peripherals\Bus\BusControllerProxy.cs" />
+    <Compile Include="Peripherals\Bus\WindowMMUBusController.cs" />
     <Compile Include="Peripherals\Bus\PeripheralCollection.cs" />
     <Compile Include="Peripherals\Bus\UnhandledAccessBehaviour.cs" />
     <Compile Include="Peripherals\Bus\PeripheralAccessMethods.cs" />
@@ -214,6 +218,7 @@
     <Compile Include="Exceptions\RecoverableException.cs" />
     <Compile Include="Exceptions\ConstructionException.cs" />
     <Compile Include="Core\IGPIOReceiver.cs" />
+    <Compile Include="Peripherals\Bus\IQuadWordPeripheral.cs" />
     <Compile Include="Peripherals\Bus\IDoubleWordPeripheral.cs" />
     <Compile Include="Peripherals\Bus\IBytePeripheral.cs" />
     <Compile Include="Peripherals\Bus\IWordPeripheral.cs" />
@@ -225,6 +230,7 @@
     <Compile Include="Peripherals\Bus\Wrappers\BytePeripheralWrapper.cs" />
     <Compile Include="Peripherals\Bus\Wrappers\WordPeripheralWrapper.cs" />
     <Compile Include="Peripherals\Bus\Wrappers\DoubleWordPeripheralWrapper.cs" />
+    <Compile Include="Peripherals\Bus\Wrappers\QuadWordPeripheralWrapper.cs" />
     <Compile Include="Core\GPIOEndpoint.cs" />
     <Compile Include="Core\GPIO.cs" />
     <Compile Include="Core\ILocalGPIOReceiver.cs" />
@@ -288,8 +294,15 @@
     </Compile>
     <Compile Include="Utilities\IInterestingType.cs" />
     <Compile Include="Peripherals\CPU\ICPU.cs" />
+    <Compile Include="Peripherals\CPU\ICPUWithMetrics.cs" />
     <Compile Include="Peripherals\CPU\ICPUWithExternalMmu.cs" />
-    <Compile Include="Peripherals\CPU\IControllableCPU.cs" />
+    <Compile Include="Peripherals\CPU\ICPUWithMappedMemory.cs" />
+    <Compile Include="Peripherals\CPU\ICPUWithRegisters.cs" />
+    <Compile Include="Peripherals\CPU\ICPUWithOpcodeHooks.cs" />
+    <Compile Include="Peripherals\CPU\ICPUWithMemoryAccessHooks.cs" />
+    <Compile Include="Peripherals\CPU\ICPUWithPostGprAccessHooks.cs" />
+    <Compile Include="Peripherals\CPU\IInitableCPU.cs" />
+    <Compile Include="Peripherals\CPU\CPURegister.cs" />
     <Compile Include="Utilities\ConfigurationManager.cs" />
     <Compile Include="Testing\LEDTester.cs" />
     <Compile Include="Testing\NetworkInterfaceTester.cs" />
@@ -449,6 +462,7 @@
     <Compile Include="Peripherals\CPU\BreakpointType.cs" />
     <Compile Include="Peripherals\CPU\HaltArguments.cs" />
     <Compile Include="Peripherals\CPU\ExecutionMode.cs" />
+    <Compile Include="Peripherals\CPU\ExecutionResult.cs" />
     <Compile Include="Utilities\MemberReferenceExtensions.cs" />
     <Compile Include="Utilities\WindowsFileLocker.cs" />
     <Compile Include="Peripherals\Wireless\Position.cs" />
@@ -495,7 +509,6 @@
     <Compile Include="Core\GPIOGate.cs" />
     <Compile Include="Peripherals\CAN\CANMessageFrame.cs" />
     <Compile Include="Utilities\CRCEngine.cs" />
-    <Compile Include="Utilities\CRCType.cs" />
     <Compile Include="Utilities\Collections\SimpleCache.cs" />
     <Compile Include="Utilities\BitBangHelper.cs" />
     <Compile Include="Utilities\GDB\ArgumentAttribute.cs" />
@@ -508,6 +521,13 @@
     <Compile Include="Utilities\GDB\PacketData.cs" />
     <Compile Include="Utilities\GDB\GdbStub.cs" />
     <Compile Include="Peripherals\CPU\ICpuSupportingGdb.cs" />
+    <Compile Include="Peripherals\CPU\ICPUWithMMU.cs" />
+    <Compile Include="Peripherals\CPU\GDB\GDBTypeBitField.cs" />
+    <Compile Include="Peripherals\CPU\GDB\GDBCustomType.cs" />
+    <Compile Include="Peripherals\CPU\GDB\GDBFeatureDescriptor.cs" />
+    <Compile Include="Peripherals\CPU\GDB\GDBRegisterDescriptor.cs" />
+    <Compile Include="Peripherals\CPU\GDB\GDBTypeEnumValue.cs" />
+    <Compile Include="Peripherals\CPU\GDB\GDBTypeField.cs" />
     <Compile Include="Utilities\GDB\IMultithreadCommand.cs" />
     <Compile Include="Utilities\BitPatternDetector.cs" />
     <Compile Include="Testing\SysbusTester.cs" />
@@ -539,7 +559,6 @@
     <Compile Include="Utilities\Crypto\PRESENTCipher.cs" />
     <Compile Include="Utilities\Crypto\AesProvider.cs" />
     <Compile Include="Utilities\VmemReader.cs" />
-    <Compile Include="Peripherals\I2C\DummyI2CSlave.cs" />
     <Compile Include="Peripherals\UART\IUARTWithBufferState.cs" />
     <Compile Include="Utilities\SimpleFileCache.cs" />
     <Compile Include="Utilities\FileLocker.cs" />
@@ -548,6 +567,21 @@
     <Compile Include="Exceptions\RegisterValueUnavailableException.cs" />
     <Compile Include="Utilities\FilePath.cs" />
     <Compile Include="Peripherals\CPU\CpuAbortException.cs" />
+    <Compile Include="Peripherals\IHasFrequency.cs" />
+    <Compile Include="Peripherals\Sensor\SensorSamplesPacket.cs" />
+    <Compile Include="Core\Structure\TypedNumberRegistrationPoint.cs" />
+    <Compile Include="Utilities\SafeBinaryReader.cs" />
+    <Compile Include="Utilities\RESD\MetadataValue.cs" />
+    <Compile Include="Utilities\RESD\MetadataBlock.cs" />
+    <Compile Include="Utilities\RESD\DataBlock.cs" />
+    <Compile Include="Utilities\RESD\SamplesData.cs" />
+    <Compile Include="Utilities\RESD\RESDException.cs" />
+    <Compile Include="Utilities\RESD\RESDSample.cs" />
+    <Compile Include="Utilities\RESD\RESDParser.cs" />
+    <Compile Include="Peripherals\Timers\BCDHelper.cs" />
+    <Compile Include="Peripherals\Timers\DateTimeWithCustomWeekday.cs" />
+    <Compile Include="Peripherals\Network\AtCommandModem.cs" />
+    <Compile Include="Peripherals\Network\AtCommandModemParsing.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <ItemGroup />

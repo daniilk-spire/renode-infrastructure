@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2018 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -94,6 +94,8 @@ namespace Antmicro.Renode.Utilities
             config.Set(name, value);
         }
 
+        public string FilePath => Config.FileName;
+
         private IConfig VerifyValue(string group, string name, object defaultValue)
         {
             if(defaultValue == null)
@@ -149,21 +151,24 @@ namespace Antmicro.Renode.Utilities
             {
                 if(source == null)
                 {
-                    if(File.Exists(FileName))
+                    using(var locker = new FileLocker(FileName + ConfigurationLockSuffix))
                     {
-                        try
+                        if(File.Exists(FileName))
                         {
-                            source = new IniConfigSource(FileName);
+                            try
+                            {
+                                source = new IniConfigSource(FileName);
+                            }
+                            catch(Exception)
+                            {
+                                Logger.Log(LogLevel.Warning, "Configuration file {0} exists, but it cannot be read.", FileName);
+                            }
                         }
-                        catch(Exception)
+                        else
                         {
-                            Logger.Log(LogLevel.Warning, "Configuration file {0} exists, but it cannot be read.", FileName);
+                            source = new IniConfigSource();
+                            source.Save(FileName);
                         }
-                    }
-                    else
-                    {
-                        source = new IniConfigSource();
-                        source.Save(FileName);
                     }
                 }
                 source.AutoSave = !Emulator.InCIMode;
@@ -175,6 +180,8 @@ namespace Antmicro.Renode.Utilities
         public string FileName { get; private set; }
 
         private IniConfigSource source;
+
+        private const string ConfigurationLockSuffix = ".lock";
     }
 }
 

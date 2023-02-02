@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2018 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -15,8 +15,8 @@ namespace Antmicro.Renode.Time
         void ExecuteInLock(Action action);
         void AddClockEntry(ClockEntry entry);
         void ExchangeClockEntryWith(Action handler, Func<ClockEntry, ClockEntry> visitor,
-            Func<ClockEntry> factoryIfNonExistant = null);
-        bool RemoveClockEntry(Action handler);
+            Func<ClockEntry> factoryIfNonExistent = null);
+        bool TryRemoveClockEntry(Action handler);
         ClockEntry GetClockEntry(Action handler);
         void GetClockEntryInLockContext(Action handler, Action<ClockEntry> visitor);
         IEnumerable<ClockEntry> GetAllClockEntries();

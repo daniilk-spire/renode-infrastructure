@@ -1,10 +1,10 @@
 //
-// Copyright (c) 2010-2021 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
 //
-
+using System;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure.Registers;
 using Antmicro.Renode.Logging;
@@ -16,12 +16,37 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         public OpenTitan_PowerManager(Machine machine) : base(machine)
         {
             IRQ = new GPIO();
+            FatalAlert = new GPIO();
             DefineRegisters();
+        }
+
+        public override void Reset()
+        {
+            base.Reset();
+            FatalAlert.Unset();
+        }
+
+        public void RequestWakeup()
+        {
+            if(lowPowerHint.Value)
+            {
+                // Wakeup level signal from peripheral is active
+                OnLowPowerStateChange(false);
+                lowPowerHint.Value = false;
+            }
         }
 
         public long Size => 0x100;
 
         public GPIO IRQ { get; }
+        public GPIO FatalAlert { get; }
+
+        public event Action<bool> LowPowerStateChanged;
+
+        private void OnLowPowerStateChange(bool lowPowered)
+        {
+            LowPowerStateChanged?.Invoke(lowPowered);
+        }
 
         private void DefineRegisters()
         {
@@ -44,7 +69,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 .WithIgnoredBits(1, 31);
 
             Registers.AlertTest.Define(this)
-                .WithTaggedFlag("fatal_fault", 0)
+                .WithFlag(0, FieldMode.Write, writeCallback: (_, val) => { if(val) FatalAlert.Blink(); }, name: "fatal_fault")
                 .WithIgnoredBits(1, 31);
             
             Registers.ControlConfigRegWriteEnable.Define(this, 0x1)
@@ -62,23 +87,48 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 .WithReservedBits(9, 23)
                 .WithWriteCallback((_, __) => LogPowerState());
 
-            Registers.ConfigClockDomainSync.Define(this, 0x1)
-                .WithReservedBits(0, 32);
+            Registers.ConfigClockDomainSync.Define(this)
+                .WithFlag(0, name: "SYNC", 
+                    valueProviderCallback: _ => false, 
+                    writeCallback: (_, val) => 
+                    {
+                        if(val)
+                        {
+                            if(lowPowerHint.Value)
+                            {
+                                OnLowPowerStateChange(true);
+                            }
+                            else
+                            {
+                                OnLowPowerStateChange(false);
+                            }
+                        }
+                    })
+                .WithReservedBits(1, 31);
             
-            Registers.WakeupEnableRegWriteEnable.Define(this)
-                .WithReservedBits(0, 32);
+            Registers.WakeupEnableRegWriteEnable.Define(this, 0x1)
+                .WithTaggedFlag("WAKEUP_EN_REGWEN.EN", 0)
+                .WithReservedBits(1, 31);
+
+            Registers.WakeupEnable.Define(this)
+                .WithFlags(0, NumberOfWakeupSources, out wakeupEnableFlags, name: "WAKEUP_EN");
 
             Registers.WakeStatus.Define(this)
-                .WithReservedBits(0, 32);
+                .WithFlags(0, NumberOfWakeupSources, out wakeStatusFlags, FieldMode.Read, name: "WAKE_STATUS");
 
             Registers.ResetEnableRegWriteEnable.Define(this, 0x1)
-                .WithReservedBits(0,32);
+                .WithTaggedFlag("RESET_EN_REGWEN.EN", 0)
+                .WithReservedBits(1, 31);
 
             Registers.ResetEnable.Define(this)
-                .WithReservedBits(0, 32);
+                .WithTaggedFlag("RESET_EN.EN0", 0)
+                .WithTaggedFlag("RESET_EN.EN1", 1)
+                .WithReservedBits(2, 30);
 
             Registers.ResetStatus.Define(this)
-                .WithReservedBits(0, 32);
+                .WithTaggedFlag("RESET_STATUS.VAL0", 0)
+                .WithTaggedFlag("RESET_STATUS.VAL1", 1)
+                .WithReservedBits(2, 30);
 
             Registers.EscalateResetStatue.Define(this)
                 .WithReservedBits(0, 32);
@@ -116,6 +166,10 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private IFlagRegisterField usbClockEnableLowPower;
         private IFlagRegisterField usbClockEnableActive;
         private IFlagRegisterField mainPowerDown;
+
+        private IFlagRegisterField[] wakeupEnableFlags;
+        private IFlagRegisterField[] wakeStatusFlags;
+        private const int NumberOfWakeupSources = 6;
 
         private enum Registers
         {

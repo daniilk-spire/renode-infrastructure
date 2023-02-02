@@ -228,15 +228,15 @@ namespace Antmicro.Renode.UserInterface
             Commands.Add(new MonitorPathCommand(this, monitorPath));
             Commands.Add(new UsingCommand(this, () => usings));
             Commands.Add(new StartCommand(this, includeCommand));
-            Commands.Add(new SetCommand(this, "set", "a variable", (x, y) => SetVariable(x, y, variables), (x, y) => EnableStringEater(x, y, VariableType.Variable),
+            Commands.Add(new SetCommand(this, "set", "VARIABLE", (x, y) => SetVariable(x, y, variables), (x, y) => EnableStringEater(x, y, VariableType.Variable),
                 DisableStringEater, () => stringEaterMode, GetVariableName));
-            Commands.Add(new SetCommand(this, "macro", "a macro", (x, y) => SetVariable(x, y, macros), (x, y) => EnableStringEater(x, y, VariableType.Macro),
+            Commands.Add(new SetCommand(this, "macro", "MACRO", (x, y) => SetVariable(x, y, macros), (x, y) => EnableStringEater(x, y, VariableType.Macro),
                 DisableStringEater, () => stringEaterMode, GetVariableName));
-            Commands.Add(new SetCommand(this, "alias", "an alias", (x, y) => SetVariable(x, y, aliases), (x, y) => EnableStringEater(x, y, VariableType.Alias),
+            Commands.Add(new SetCommand(this, "alias", "ALIAS", (x, y) => SetVariable(x, y, aliases), (x, y) => EnableStringEater(x, y, VariableType.Alias),
 	        DisableStringEater, () => stringEaterMode, GetVariableName));
             Commands.Add(new PythonExecuteCommand(this, x => ExpandVariable(x, variables), pythonRunner.ExecutePythonCommand));
-            Commands.Add(new ExecuteCommand(this, "execute", "variable", x => ExpandVariable(x, variables), () => variables.Keys));
-            Commands.Add(new ExecuteCommand(this, "runMacro", "macro", x => ExpandVariable(x, macros), () => macros.Keys));
+            Commands.Add(new ExecuteCommand(this, "execute", "VARIABLE", x => ExpandVariable(x, variables), () => variables.Keys));
+            Commands.Add(new ExecuteCommand(this, "runMacro", "MACRO", x => ExpandVariable(x, macros), () => macros.Keys));
             Commands.Add(new MachCommand(this, () => currentMachine, x => currentMachine = x));
             Commands.Add(new VerboseCommand(this, x => verboseMode = x));
         }
@@ -288,10 +288,11 @@ namespace Antmicro.Renode.UserInterface
             {
                 //Reevaluate the expression if the tokenization failed, but expanding the variables may help.
                 //E.g. i $ORIGIN/dir/script. This happens only if the variable is the last successful token.
-                if(result.Tokens.Any() && result.Tokens.Last() is VariableToken)
+                if(result.Tokens.Any() && result.Tokens.Last() is VariableToken lastVariableToken)
                 {
-                    var tokensAfter = ExpandVariables(result.Tokens);
-                    var newString = tokensAfter.Select(x => x.OriginalValue).Stringify() + cmd.Substring(cmd.Length - result.UnmatchedCharactersLeft);
+                    var lastExpandedToken = ExpandVariable(lastVariableToken, variables);
+                    // replace the last token with the expanded version
+                    var newString = result.Tokens.Take(result.Tokens.Count() - 1).Select(x => x.OriginalValue).Stringify() + lastExpandedToken.OriginalValue + cmd.Substring(cmd.Length - result.UnmatchedCharactersLeft);
                     return Tokenize(newString, writer);
                 }
                 var messages = new StringBuilder();

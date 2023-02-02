@@ -1,4 +1,4 @@
-﻿//
+//
 // Copyright (c) 2010-2022 Antmicro
 //
 // This file is licensed under the MIT License.
@@ -11,17 +11,19 @@ using System.Linq;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure;
 using Antmicro.Renode.Exceptions;
+using Antmicro.Renode.Debugging;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals.Timers;
 using Antmicro.Renode.Peripherals.CFU;
 using Antmicro.Renode.Time;
 using Antmicro.Renode.Utilities;
 using Antmicro.Renode.Utilities.Binding;
+using Antmicro.Migrant;
 using Endianess = ELFSharp.ELF.Endianess;
 
 namespace Antmicro.Renode.Peripherals.CPU
 {
-    public abstract class BaseRiscV : TranslationCPU, IPeripheralContainer<ICFU, NumberRegistrationPoint<int>>
+    public abstract class BaseRiscV : TranslationCPU, IPeripheralContainer<ICFU, NumberRegistrationPoint<int>>, ICPUWithPostOpcodeExecutionHooks, ICPUWithPostGprAccessHooks
     {
         protected BaseRiscV(IRiscVTimeProvider timeProvider, uint hartId, string cpuType, Machine machine, PrivilegeArchitecture privilegeArchitecture, Endianess endianness, CpuBitness bitness, ulong? nmiVectorAddress = null, uint? nmiVectorLength = null, bool allowUnalignedAccesses = false, InterruptMode interruptMode = InterruptMode.Auto)
                 : base(hartId, cpuType, machine, endianness, bitness)
@@ -66,7 +68,9 @@ namespace Antmicro.Renode.Peripherals.CPU
 
             ChildCollection = new Dictionary<int, ICFU>();
 
-            customOpcodes = new List<Tuple<string, ulong, ulong>>();            
+            customOpcodes = new List<Tuple<string, ulong, ulong>>();
+            postOpcodeExecutionHooks = new List<Action<ulong>>();
+            postGprAccessHooks = new Action<bool>[NumberOfGeneralPurposeRegisters];
         }
 
         public void Register(ICFU cfu, NumberRegistrationPoint<int> registrationPoint)
@@ -115,7 +119,7 @@ namespace Antmicro.Renode.Peripherals.CPU
             if(this.NMIVectorLength == null || this.NMIVectorAddress == null)
             {
                 this.Log(LogLevel.Warning, "Non maskable interrupt not supported on this CPU. {0} or {1} not set",
-                        nameof(this.NMIVectorAddress) , nameof(this.NMIVectorLength));
+                        nameof(this.NMIVectorAddress), nameof(this.NMIVectorLength));
             }
             else
             {
@@ -215,7 +219,7 @@ namespace Antmicro.Renode.Peripherals.CPU
                 throw new ConstructionException($"Could not install custom instruction handler for length {length}, mask 0x{bitMask:X} and pattern 0x{bitPattern:X}");
             }
 
-            customOpcodes.Add(Tuple.Create(name ?? pattern, bitPattern, bitMask)); 
+            customOpcodes.Add(Tuple.Create(name ?? pattern, bitPattern, bitMask));
             customInstructionsMapping[id] = handler;
             return true;
         }
@@ -226,7 +230,7 @@ namespace Antmicro.Renode.Peripherals.CPU
             {
                 InstallOpcodeCounterPattern(opc.Item1, opc.Item2, opc.Item3);
             }
-            
+
             EnableOpcodesCounting = true;
         }
 
@@ -238,6 +242,38 @@ namespace Antmicro.Renode.Peripherals.CPU
                 TlibSetVector(registerNumber, elementIndex, value.Value);
             }
             return TlibGetVector(registerNumber, elementIndex);
+        }
+
+        public void EnablePostOpcodeExecutionHooks(uint value)
+        {
+            TlibEnablePostOpcodeExecutionHooks(value != 0 ? 1u : 0u);
+        }
+
+        public void AddPostOpcodeExecutionHook(UInt64 mask, UInt64 value, Action<ulong> action)
+        {
+            var index = TlibInstallPostOpcodeExecutionHook(mask, value);
+            if(index == UInt32.MaxValue)
+            {
+                throw new RecoverableException("Unable to register opcode hook. Maximum number of hooks already installed");
+            }
+            // Assert that the list index will match the one returned from the core
+            if(index != postOpcodeExecutionHooks.Count)
+            {
+                throw new ApplicationException("Mismatch in the post-execution opcode hooks on the C# and C side." +
+                                                " One of them miss at least one element");
+            }
+            postOpcodeExecutionHooks.Add(action);
+        }
+
+        public void EnablePostGprAccessHooks(uint value)
+        {
+            TlibEnablePostGprAccessHooks(value != 0 ? 1u : 0u);
+        }
+
+        public void InstallPostGprAccessHookOn(uint registerIndex, Action<bool> callback,  uint value)
+        {
+            postGprAccessHooks[registerIndex] = callback;
+            TlibEnablePostGprAccessHookOn(registerIndex, value);
         }
 
         public CSRValidationLevel CSRValidation
@@ -333,7 +369,7 @@ namespace Antmicro.Renode.Peripherals.CPU
                 return gdbFeatures;
             }
         }
-        
+
         public IEnumerable<InstructionSet> ArchitectureSets { get; }
 
         public abstract RegisterValue VLEN { get; }
@@ -468,7 +504,7 @@ namespace Antmicro.Renode.Peripherals.CPU
 
             var valuePointer = Marshal.AllocHGlobal(vlenb);
             Marshal.Copy(valueArray, 0, valuePointer, vlenb);
-            
+
             var result = true;
             if(TlibSetWholeVector(registerNumber, valuePointer) != 0)
             {
@@ -498,7 +534,7 @@ namespace Antmicro.Renode.Peripherals.CPU
 
         private bool IsVectorRegisterNumber(int register)
         {
-            return RiscVRegisterDescription.StartOfVRegisters <= register && register < RiscVRegisterDescription.StartOfVRegisters + RiscVRegisterDescription.NumberOfVRegisters; 
+            return RiscVRegisterDescription.StartOfVRegisters <= register && register < RiscVRegisterDescription.StartOfVRegisters + RiscVRegisterDescription.NumberOfVRegisters;
         }
 
         [Export]
@@ -559,6 +595,36 @@ namespace Antmicro.Renode.Peripherals.CPU
             return pcWrittenFlag ? 1 : 0;
         }
 
+        [Export]
+        private void HandlePostOpcodeExecutionHook(UInt32 id, UInt64 pc)
+        {
+            this.NoisyLog($"Got opcode hook no {id} from PC {pc}");
+            if(id < (uint)postOpcodeExecutionHooks.Count)
+            {
+                postOpcodeExecutionHooks[(int)id].Invoke(pc);
+            }
+            else
+            {
+                this.Log(LogLevel.Error, "Received opcode hook with non-existing id = {0}", id);
+            }
+        }
+
+        [Export]
+        private void HandlePostGprAccessHook(UInt32 registerIndex, UInt32 writeOrRead)
+        {
+            DebugHelper.Assert(registerIndex < 32, $"Index outside of range : {registerIndex}");
+            if(postGprAccessHooks[(int)registerIndex] == null)
+            {
+                this.Log(LogLevel.Error, "No callback for register #{0} installed", registerIndex);
+                return;
+            }
+
+            var isWrite = (writeOrRead != 0);
+
+            this.NoisyLog("Post-GPR {0} hook for register #{1} triggered", isWrite ? "write" : "read", registerIndex);
+            postGprAccessHooks[(int)registerIndex].Invoke(isWrite);
+        }
+
         public readonly Dictionary<int, ICFU> ChildCollection;
 
         private bool pcWrittenFlag;
@@ -574,6 +640,12 @@ namespace Antmicro.Renode.Peripherals.CPU
         private readonly Dictionary<SimpleCSR, ulong> simpleCSRs = new Dictionary<SimpleCSR, ulong>();
 
         private List<GDBFeatureDescriptor> gdbFeatures = new List<GDBFeatureDescriptor>();
+
+        [Constructor]
+        private readonly List<Action<ulong>> postOpcodeExecutionHooks;
+
+        [Transient]
+        private readonly Action<bool>[] postGprAccessHooks;
 
         // 649:  Field '...' is never assigned to, and will always have its default value null
 #pragma warning disable 649
@@ -600,8 +672,8 @@ namespace Antmicro.Renode.Peripherals.CPU
 
         [Import]
         private FuncUInt64UInt64UInt64UInt64 TlibInstallCustomInstruction;
-        
         [Import(Name="tlib_install_custom_csr")]
+
         private FuncInt32UInt64 TlibInstallCustomCSR;
 
         [Import]
@@ -642,6 +714,18 @@ namespace Antmicro.Renode.Peripherals.CPU
 
         [Import]
         private FuncUInt32UInt32IntPtr TlibSetWholeVector;
+
+        [Import]
+        private ActionUInt32 TlibEnablePostOpcodeExecutionHooks;
+
+        [Import]
+        private FuncUInt32UInt64UInt64 TlibInstallPostOpcodeExecutionHook;
+
+        [Import]
+        private ActionUInt32 TlibEnablePostGprAccessHooks;
+
+        [Import]
+        private ActionUInt32UInt32 TlibEnablePostGprAccessHookOn;
 
 #pragma warning restore 649
 
@@ -779,8 +863,10 @@ namespace Antmicro.Renode.Peripherals.CPU
         }
 
         private readonly InterruptMode interruptMode;
-        
+
         private readonly List<Tuple<string, ulong, ulong>> customOpcodes;
+
+        private const int NumberOfGeneralPurposeRegisters = 32;
 
         protected enum IrqType
         {

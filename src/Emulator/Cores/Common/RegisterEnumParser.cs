@@ -110,14 +110,21 @@ namespace Antmicro.Renode.CoresSourceParser
 
         private void InsideEnumHandler(string line)
         {
-            if(line.Trim().StartsWith(BeginningOfIfder, StringComparison.CurrentCulture))
+            // Trim lines with single line comment only
+            line = Regex.Replace(line, @"^(\s*//.*)$", "").Trim();
+            if(line.Length == 0)
+            {
+                return;
+            }
+
+            if(line.StartsWith(BeginningOfIfder, StringComparison.CurrentCulture))
             {
                 var value = line.Replace(BeginningOfIfder, string.Empty).Trim();
                 modes.Push(defines.Contains(value) ? Mode.InsideDefinedIfdef : Mode.InsideUndefinedIfdef);
                 return;
             }
 
-            if(line.Trim() == EndOfEnum)
+            if(line == EndOfEnum)
             {
                 modes.Pop();
                 return;
@@ -125,28 +132,29 @@ namespace Antmicro.Renode.CoresSourceParser
 
             // e.g., R_0_32 = 147,
             // X_32 = 155,
-            var match = Regex.Match(line, @"^\s*(?<name>[\p{L}0-9]+)(_(?<index>[0-9]+))?_(?<width>[0-9]+)\s*=\s*(?<value>[0-9]+)\s*,?\s*$");
+            var match = Regex.Match(line, @"^(?<name>[\p{L}0-9]+)(_(?<index>[0-9]+))?_(?<width>[0-9]+)\s*=\s*(?<value>((0x)?[0-9a-fA-F]+)|([0-9]+))\s*,?$");
             if(string.IsNullOrEmpty(match.Groups["name"].Value))
             {
                 throw new ArgumentException($"Register name was in a wrong format: {line}");
             }
 
+            var regValue = match.Groups["value"].Value;
             var regDesc = new RegisterDescriptor
             {
                 Name = match.Groups["name"].Value,
                 Width = int.Parse(match.Groups["width"].Value),
-                Value = int.Parse(match.Groups["value"].Value)
+                Value = Convert.ToInt32(regValue, regValue.StartsWith("0x") ? 16 : 10)
             };
 
             if(!string.IsNullOrEmpty(match.Groups["index"].Value))
             {
                 if(!groupedRegisters.ContainsKey(regDesc.Name))
                 {
-                    groupedRegisters[regDesc.Name] = new List<Tuple<RegisterDescriptor,int>>();
+                    groupedRegisters[regDesc.Name] = new List<Tuple<RegisterDescriptor, int>>();
                 }
 
                 var index = int.Parse(match.Groups["index"].Value);
-                groupedRegisters[regDesc.Name].Add(Tuple.Create(regDesc,index));
+                groupedRegisters[regDesc.Name].Add(Tuple.Create(regDesc, index));
             }
             else
             {

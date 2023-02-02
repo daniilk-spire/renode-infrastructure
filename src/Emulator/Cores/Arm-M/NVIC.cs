@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 // Copyright (c) 2020-2021 Microsoft
 //
@@ -19,10 +19,10 @@ using Antmicro.Renode.Utilities;
 
 namespace Antmicro.Renode.Peripherals.IRQControllers
 {
-    [AllowedTranslations(AllowedTranslation.ByteToDoubleWord)]
-    public class NVIC : IDoubleWordPeripheral, IKnownSize, IIRQController
+    [AllowedTranslations(AllowedTranslation.ByteToDoubleWord | AllowedTranslation.WordToDoubleWord)]
+    public class NVIC : IDoubleWordPeripheral, IHasFrequency, IKnownSize, IIRQController
     {
-        public NVIC(Machine machine, long systickFrequency = 50 * 0x800000, byte priorityMask = 0xFF)
+        public NVIC(Machine machine, long systickFrequency = 50 * 0x800000, byte priorityMask = 0xFF, uint cpuId = DefaultCpuId, uint numberOfMPURegions = 8)
         {
             priorities = new byte[IRQCount];
             activeIRQs = new Stack<int>();
@@ -30,6 +30,8 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             systick = new LimitTimer(machine.ClockSource, systickFrequency, this, nameof(systick), uint.MaxValue, Direction.Descending, false, eventEnabled: true, autoUpdate: true);
             this.machine = machine;
             this.priorityMask = priorityMask;
+            this.cpuId = cpuId;
+            this.numberOfMPURegions = numberOfMPURegions;
             irqs = new IRQState[IRQCount];
             IRQ = new GPIO();
             resetMachine = machine.RequestReset;
@@ -61,6 +63,18 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             return irqs.Take(16).Select((x,i) => new {x,i}).Where(y => (y.x & IRQState.Enabled) != 0).Select(y => y.i).OrderBy(x => x);
         }
 
+        public long Frequency
+        {
+            get
+            {
+                return systick.Frequency;
+            }
+            set
+            {
+                systick.Frequency = value;
+            }
+        }
+
         public int Divider
         {
             set
@@ -77,7 +91,11 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             }
             if(offset >= SetEnableStart && offset < SetEnableEnd)
             {
-                return HandleSetEnableRead(offset - SetEnableStart);
+                return HandleEnableRead(offset - SetEnableStart);
+            }
+            if(offset >= ClearEnableStart && offset < ClearEnableEnd)
+            {
+                return HandleEnableRead(offset - ClearEnableStart);
             }
             if(offset >= SetPendingStart && offset < SetPendingEnd)
             {
@@ -86,6 +104,10 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             if(offset >= ClearPendingStart && offset < ClearPendingEnd)
             {
                 return GetPending((int)(offset - ClearPendingStart));
+            }
+            if(offset >= ActiveBitStart && offset < ActiveBitEnd)
+            {
+                return GetActive((int)(offset - ActiveBitStart));
             }
             switch((Registers)offset)
             {
@@ -96,7 +118,7 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             case Registers.VectorTableOffset:
                 return cpu.VectorTableOffset;
             case Registers.CPUID:
-                return CPUID;
+                return cpuId;
             case Registers.CoprocessorAccessControl:
                 return cpu.CPACR;
             case Registers.FPContextControl:
@@ -138,7 +160,7 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             case Registers.SysTickValue:
                 return (uint)systick.Value;
             case Registers.SystemControlRegister:
-                return 0;
+                return currentSevOnPending ? SevOnPending : 0x0;
             case Registers.ConfigurationAndControl:
                 return ccr;
             case Registers.SystemHandlerPriority1:
@@ -155,7 +177,8 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
                 this.DebugLog("ConfigurableFaultStatus read. Returning NOCP.");
                 return (1 << 19) /* NOCP */;
             case Registers.MPUType:
-                return 0x800; // 8 MPU regions
+                // Bits 0-7 and 16-31 are RAZ in ARMv6-M, ARMv7-M and ARMv8-M.
+                return (numberOfMPURegions & 0xFF) << 8;  
             case Registers.InterruptControllerType:
                 return 0b0111;
             default:
@@ -303,7 +326,7 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
                 break;
             case Registers.SoftwareTriggerInterruptRegister:
                 // This register is implemented only in ARMv7m and ARMv8m
-                if(cpu.Model == "cortex-m3" || cpu.Model == "cortex-m4" || cpu.Model == "cortex-m7")
+                if(cpu.Model == "cortex-m3" || cpu.Model == "cortex-m4" || cpu.Model == "cortex-m4f" || cpu.Model == "cortex-m7")
                 {
                     SetPendingIRQ((int)(16 + value));
                 }
@@ -431,8 +454,7 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
                 this.NoisyLog("Internal IRQ {0}.", number);
                 if((irqs[number] & IRQState.Active) == 0)
                 {
-                    irqs[number] |= IRQState.Pending;
-                    pendingIRQs.Add(number);
+                    SetPending(number);
                 }
                 FindPendingInterrupt();
             }
@@ -451,8 +473,7 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
                     // let's latch it if not active
                     if((irqs[number] & IRQState.Active) == 0)
                     {
-                        irqs[number] |= IRQState.Pending;
-                        pendingIRQs.Add(number);
+                        SetPending(number);
                     }
                 }
                 else
@@ -562,13 +583,18 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             }
         }
 
-        private uint HandleSetEnableRead(long offset)
+        private uint HandleEnableRead(long offset)
         {
             lock(irqs)
             {
                 var firstIRQNo = 8 * offset + 16;
                 var lastIRQNo = firstIRQNo + 31;
                 var result = 0u;
+                if(firstIRQNo < 0 || lastIRQNo > irqs.Length)
+                {
+                    this.Log(LogLevel.Error, "Trying to access IRQs from range {0}-{1}, but only {2} are defined (offset 0x{3:X})", firstIRQNo, lastIRQNo, irqs.Length, offset);
+                    return result;
+                }
                 for(var i = lastIRQNo; i > firstIRQNo; i--)
                 {
                     result |= ((irqs[i] & IRQState.Enabled) != 0) ? 1u : 0u;
@@ -576,6 +602,24 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
                 }
                 result |= ((irqs[firstIRQNo] & IRQState.Enabled) != 0) ? 1u : 0u;
                 return result;
+            }
+        }
+
+        private void SetPending(int i)
+        {
+            this.DebugLog("Set pending IRQ {0}.", i);
+            var before = irqs[i];
+            irqs[i] |= IRQState.Pending;
+            pendingIRQs.Add(i);
+
+            // when SEVONPEND is set all interrupts (even those masked)
+            // generate an event when entering the pending state
+            if(before != irqs[i] && currentSevOnPending)
+            {
+                foreach(var cpu in machine.SystemBus.GetCPUs().OfType<CortexM>())
+                {
+                    cpu.SetEventFlag(true);
+                }
             }
         }
 
@@ -593,9 +637,7 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
                         {
                             if (set)
                             {
-                                this.DebugLog("Set pending IRQ {0}.", i);
-                                irqs[i] |= IRQState.Pending;
-                                pendingIRQs.Add(i);
+                                SetPending(i);
                             }
                             else
                             {
@@ -685,6 +727,11 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             return BitHelper.GetValueFromBitsArray(irqs.Skip(16 + offset * 8).Take(32).Select(irq => (irq & IRQState.Pending) != 0));
         }
 
+        private uint GetActive(int offset)
+        {
+            return BitHelper.GetValueFromBitsArray(irqs.Skip(16 + offset * 8).Take(32).Select(irq => (irq & IRQState.Active) != 0));
+        }
+
         private bool IsPrivilegedMode()
         {
             // Is in handler mode or is privileged
@@ -706,6 +753,8 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             }
         }
 
+        private uint numberOfMPURegions;
+
         [Flags]
         private enum IRQState : byte
         {
@@ -722,6 +771,12 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
             SysTickReloadValue = 0x14,
             SysTickValue = 0x18,
             SysTickCalibrationValue = 0x1C,
+            SetEnable = 0x100,
+            ClearEnable = 0x180,
+            SetPending = 0x200,
+            ClearPending = 0x280,
+            ActiveBit = 0x300,
+            InterruptPriority = 0x400,
             CPUID = 0xD00,
             InterruptControlState = 0xD04,
             VectorTableOffset = 0xD08,
@@ -763,20 +818,23 @@ namespace Antmicro.Renode.Peripherals.IRQControllers
         private CortexM cpu;
         private readonly LimitTimer systick;
         private readonly Machine machine;
+        private readonly uint cpuId;
 
         private const int SpuriousInterrupt    = 256;
         private const int SetEnableStart       = 0x100;
-        private const int SetEnableEnd         = 0x120;
+        private const int SetEnableEnd         = 0x140;
         private const int ClearEnableStart     = 0x180;
-        private const int ClearEnableEnd       = 0x200;
-        private const int ClearPendingStart    = 0x280;
-        private const int ClearPendingEnd      = 0x300;
+        private const int ClearEnableEnd       = 0x1C0;
         private const int SetPendingStart      = 0x200;
-        private const int SetPendingEnd        = 0x280;
+        private const int SetPendingEnd        = 0x240;
+        private const int ClearPendingStart    = 0x280;
+        private const int ClearPendingEnd      = 0x2C0;
+        private const int ActiveBitStart       = 0x300;
+        private const int ActiveBitEnd         = 0x320;
         private const int PriorityStart        = 0x400;
-        private const int PriorityEnd          = 0x4F0;
-        private const int IRQCount             = 256 + 16;
-        private const uint CPUID               = 0x412FC231;
+        private const int PriorityEnd          = 0x7F0;
+        private const int IRQCount             = 512 + 16;
+        private const uint DefaultCpuId        = 0x412FC231;
         private const int VectKey              = 0x5FA;
         private const int VectKeyStat          = 0xFA05;
         private const uint SysTickMaximumValue = 0x00FFFFFF;

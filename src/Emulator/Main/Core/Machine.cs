@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -48,6 +48,7 @@ namespace Antmicro.Renode.Core
             pausedState = new PausedState(this);
             SystemBus = new SystemBus(this);
             registeredPeripherals = new MultiTree<IPeripheral, IRegistrationPoint>(SystemBus);
+            peripheralsBusControllers = new Dictionary<IBusPeripheral, BusControllerWrapper>();
             userStateHook = delegate
             {
             };
@@ -55,10 +56,17 @@ namespace Antmicro.Renode.Core
             SetLocalName(SystemBus, SystemBusName);
             gdbStubs = new Dictionary<int, GdbStub>();
 
+            invalidatedAddresses = new List<long>();
+            invalidatedAddresses.Capacity = InitialDirtyListLength;
+            invalidatedAddressesLock = new object();
+            firstUnbroadcastedDirtyAddressIndex = new Dictionary<uint, int>();
+
             if(createLocalTimeSource)
             {
                 LocalTimeSource = new SlaveTimeSource();
             }
+
+            machineCreatedAt = new DateTime(CustomDateTime.Now.Ticks, DateTimeKind.Local);
         }
 
         [PreSerialization]
@@ -352,6 +360,43 @@ namespace Antmicro.Renode.Core
             return name;
         }
 
+        public IBusController RegisterBusController(IBusPeripheral peripheral, IBusController controller)
+        {
+            using(ObtainPausedState())
+            {
+                if(!peripheralsBusControllers.TryGetValue(peripheral, out var wrapper))
+                {
+                    wrapper = new BusControllerWrapper(controller);
+                    peripheralsBusControllers.Add(peripheral, wrapper);
+                }
+                else
+                {
+                    if(wrapper.ParentController != SystemBus && wrapper.ParentController != controller)
+                    {
+                        throw new RecoverableException($"Trying to change the BusController from {wrapper.ParentController} to {controller} for the {peripheral} peripheral.");
+                    }
+                    wrapper.ChangeWrapped(controller);
+                }
+                return wrapper;
+            }
+        }
+
+        public bool TryGetBusController(IBusPeripheral peripheral, out IBusController controller)
+        {
+            var exists = peripheralsBusControllers.TryGetValue(peripheral, out var wrapper);
+            controller = wrapper;
+            return exists;
+        }
+
+        public IBusController GetSystemBus(IBusPeripheral peripheral)
+        {
+            if(!TryGetBusController(peripheral, out var controller))
+            {
+                controller = RegisterBusController(peripheral, SystemBus);
+            }
+            return controller;
+        }
+
         public bool IsRegistered(IPeripheral peripheral)
         {
             lock(collectionSync)
@@ -377,7 +422,6 @@ namespace Antmicro.Renode.Core
                     Resume();
                     return;
                 }
-                machineStartedAt = CustomDateTime.Now;
                 foreach(var ownLife in ownLifes.OrderBy(x => x is ICPU ? 1 : 0))
                 {
                     this.NoisyLog("Starting {0}.", GetNameForOwnLife(ownLife));
@@ -427,11 +471,6 @@ namespace Antmicro.Renode.Core
         {
             lock(pausingSync)
             {
-                if(state == State.NotStarted)
-                {
-                    this.DebugLog("Reset request: doing nothing, because system is not started.");
-                    return;
-                }
                 using(ObtainPausedState())
                 {
                     foreach(var resetable in registeredPeripherals.Distinct())
@@ -521,38 +560,69 @@ namespace Antmicro.Renode.Core
             EmulationManager.Instance.CurrentEmulation.BackendManager.HideAnalyzersFor(this);
         }
 
-        public IManagedThread ObtainManagedThread(Action action, int frequency)
+        public IManagedThread ObtainManagedThread(Action action, uint frequency, string name = "managed thread", IEmulationElement owner = null, Func<bool> stopCondition = null)
         {
-            var ce = new ClockEntry(1, frequency, action, this, "managed thread", enabled: false);
-            ClockSource.AddClockEntry(ce);
-            return new ManagedThreadWrappingClockEntry(ClockSource, action);
+            return new ManagedThreadWrappingClockEntry(this, action, frequency, name, owner, stopCondition);
         }
 
         private class ManagedThreadWrappingClockEntry : IManagedThread
         {
-            public ManagedThreadWrappingClockEntry(IClockSource cs, Action action)
+            public ManagedThreadWrappingClockEntry(Machine machine, Action action, uint frequency, string name, IEmulationElement owner, Func<bool> stopCondition = null)
             {
-                clockSource = cs;
-                this.action = action;
+                this.action = () =>
+                {
+                    if(stopCondition != null && stopCondition())
+                    {
+                        Dispose();
+                    }
+                    else
+                    {
+                        action();
+                    }
+                };
+                this.machine = machine;
+                machine.ClockSource.ExchangeClockEntryWith(
+                    action, entry => entry,
+                    factoryIfNonExistent: () => new ClockEntry(1, frequency, this.action, owner ?? machine, name, enabled: false));
             }
 
             public void Dispose()
             {
-                clockSource.RemoveClockEntry(action);
+                machine.ClockSource.TryRemoveClockEntry(action);
             }
 
             public void Start()
             {
-                clockSource.ExchangeClockEntryWith(action, x => x.With(enabled: true));
+                machine.ClockSource.ExchangeClockEntryWith(
+                    action, x => x.With(enabled: true));
+            }
+
+            public void StartDelayed(TimeInterval delay)
+            {
+                Action<TimeInterval> startThread = ts =>
+                {
+                    Start();
+
+                    // Let's have the first action run precisely at the specified time.
+                    action();
+                };
+                var name = machine.ClockSource.GetClockEntry(action).LocalName;
+                machine.ScheduleAction(delay, startThread, name);
             }
 
             public void Stop()
             {
-                clockSource.ExchangeClockEntryWith(action, x => x.With(enabled: false));
+                machine.ClockSource.ExchangeClockEntryWith(action, x => x.With(enabled: false));
             }
 
-            private readonly IClockSource clockSource;
+            public uint Frequency
+            {
+                get => (uint)machine.ClockSource.GetClockEntry(action).Frequency;
+                set => machine.ClockSource.ExchangeClockEntryWith(action, entry => entry.With(frequency: value));
+            }
+
             private readonly Action action;
+            private readonly Machine machine;
         }
 
         private BaseClockSource clockSource;
@@ -589,19 +659,6 @@ namespace Antmicro.Renode.Core
                 x => (x.Frequency == 0 || x.Period == 0) ? "---" :  Misc.NormalizeDecimal((ulong)x.Period / (x.Frequency * (double)x.Step))  + "s"
             );
             return table.ToArray();
-        }
-
-        public DateTime GetRealTimeClockBase()
-        {
-            switch(RealTimeClockMode)
-            {
-            case RealTimeClockMode.VirtualTime:
-                return new DateTime(1970, 1, 1) + ElapsedVirtualTime.TimeElapsed.ToTimeSpan();
-            case RealTimeClockMode.VirtualTimeWithHostBeginning:
-                return machineStartedAt + ElapsedVirtualTime.TimeElapsed.ToTimeSpan();
-            default:
-                throw new ArgumentOutOfRangeException();
-            }
         }
 
         public void AttachGPIO(IPeripheral source, int sourceNumber, IGPIOReceiver destination, int destinationNumber, int? localReceiverNumber = null)
@@ -708,6 +765,36 @@ namespace Antmicro.Renode.Core
 
                 default:
                     throw new Exception("Should not reach here");
+            }
+        }
+
+        public long[] GetNewDirtyAddressesForCore(uint id)
+        {
+            if(!firstUnbroadcastedDirtyAddressIndex.ContainsKey(id))
+            {
+                throw new ArgumentException("No entries for a core with id {0}. Was the core registered properly?");
+            }
+
+            long[] newAddresses;
+            lock(invalidatedAddressesLock)
+            {
+                var firstUnsentIndex = firstUnbroadcastedDirtyAddressIndex[id];
+                var addressesCount = invalidatedAddresses.Count - firstUnsentIndex;
+                newAddresses = invalidatedAddresses.GetRange(firstUnsentIndex, addressesCount).ToArray();
+                firstUnbroadcastedDirtyAddressIndex[id] += addressesCount;
+            }
+            return newAddresses;
+        }
+
+        public void AppendDirtyAddresses(long[] addresses)
+        {
+            lock(invalidatedAddressesLock)
+            {
+                if(invalidatedAddresses.Count + addresses.Length > invalidatedAddresses.Capacity)
+                {
+                    TryReduceBroadcastedDirtyAddresses();
+                }
+                invalidatedAddresses.AddRange(addresses);
             }
         }
 
@@ -892,6 +979,29 @@ namespace Antmicro.Renode.Core
             }
         }
 
+        public void ScheduleAction(TimeInterval delay, Action<TimeInterval> action, string name = null)
+        {
+            if(SystemBus.TryGetCurrentCPU(out var cpu))
+            {
+                cpu.SyncTime();
+            }
+            else
+            {
+                this.Log(LogLevel.Debug, "Couldn't synchronize time before scheduling action; a slight inaccuracy might occur.");
+            }
+
+            var currentTime = ElapsedVirtualTime.TimeElapsed;
+            var startTime = currentTime + delay;
+
+            Action clockEntryHandler = () =>
+            {
+                this.Log(LogLevel.Noisy, "{0}: Executing action scheduled at {1} (current time: {2})", name ?? "unnamed", startTime, currentTime);
+                action(currentTime);
+            };
+
+            ClockSource.AddClockEntry(new ClockEntry(delay.Ticks, (long)TimeInterval.TicksPerSecond, clockEntryHandler, this, name, workMode: WorkMode.OneShot));
+        }
+
         public Profiler Profiler { get; private set; }
 
         public IPeripheral this[string name]
@@ -965,20 +1075,79 @@ namespace Antmicro.Renode.Core
             }
         }
 
-        public RealTimeClockMode RealTimeClockMode { get; set; }
+        public DateTime RealTimeClockDateTime
+        {
+            get
+            {
+                if(SystemBus.TryGetCurrentCPU(out var cpu))
+                {
+                    cpu.SyncTime();
+                }
+                return RealTimeClockStart + ElapsedVirtualTime.TimeElapsed.ToTimeSpan();
+            }
+        }
+
+        public RealTimeClockMode RealTimeClockMode
+        {
+            get => realTimeClockMode;
+            set
+            {
+                realTimeClockMode = value;
+                var realTimeClockModeChanged = RealTimeClockModeChanged;
+                if(realTimeClockModeChanged != null)
+                {
+                    realTimeClockModeChanged(this);
+                }
+            }
+        }
+
+        public DateTime RealTimeClockStart
+        {
+            get
+            {
+                switch(RealTimeClockMode)
+                {
+                case RealTimeClockMode.Epoch:
+                    return Misc.UnixEpoch;
+                case RealTimeClockMode.HostTimeLocal:
+                    return machineCreatedAt;
+                case RealTimeClockMode.HostTimeUTC:
+                    return TimeZoneInfo.ConvertTimeToUtc(machineCreatedAt, sourceTimeZone: TimeZoneInfo.Local);
+                default:
+                    throw new ArgumentOutOfRangeException();
+                }
+            }
+        }
 
         [field: Transient]
-        public event Action<Machine, MachineStateChangedEventArgs> StateChanged;
+        public event Action<Machine> MachineReset;
         [field: Transient]
         public event Action<Machine, PeripheralsChangedEventArgs> PeripheralsChanged;
         [field: Transient]
-        public event Action<Machine> MachineReset;
+        public event Action<Machine> RealTimeClockModeChanged;
+        [field: Transient]
+        public event Action<Machine, MachineStateChangedEventArgs> StateChanged;
 
         public const char PathSeparator = '.';
         public const string SystemBusName = "sysbus";
         public const string UnnamedPeripheral = "[no-name]";
         public const string MachineKeyword = "machine";
         
+        private void TryReduceBroadcastedDirtyAddresses()
+        {
+            var firstUnread = firstUnbroadcastedDirtyAddressIndex.Values.Min();
+            if(firstUnread == 0)
+            {
+                return;
+            }
+
+            invalidatedAddresses.RemoveRange(0, (int)firstUnread);
+            foreach(var key in firstUnbroadcastedDirtyAddressIndex.Keys.ToArray())
+            {
+                firstUnbroadcastedDirtyAddressIndex[key] -= firstUnread;
+            }
+        }
+
         private void InnerUnregisterFromParent(IPeripheral peripheral)
         {
             using(ObtainPausedState())
@@ -1019,6 +1188,13 @@ namespace Antmicro.Renode.Core
                     var parentNode = registeredPeripherals.GetNode(parent);
                     parentNode.AddChild(peripheral, registrationPoint);
                     var ownLife = peripheral as IHasOwnLife;
+                    if(peripheral is ICPU cpu)
+                    {
+                        lock(invalidatedAddressesLock)
+                        {
+                            firstUnbroadcastedDirtyAddressIndex[cpu.Id] = 0;
+                        }
+                    }
                     if(ownLife != null)
                     {
                         ownLifes.Add(ownLife);
@@ -1299,6 +1475,19 @@ namespace Antmicro.Renode.Core
             clockSource.Advance(diff);
         }
 
+        public void PostCreationActions()
+        {
+            // Enable broadcasting dirty addresses on multicore platforms
+            var cpus = SystemBus.GetCPUs().OfType<ICPUWithMappedMemory>().ToArray();
+            if(cpus.Length > 1)
+            {
+                foreach(var cpu in cpus)
+                {
+                    cpu.SetBroadcastDirty(true);
+                }
+            }
+        }
+
         [Constructor]
         private Dictionary<int, GdbStub> gdbStubs;
         private string userState;
@@ -1310,20 +1499,43 @@ namespace Antmicro.Renode.Core
         private int currentStampLevel;
         private Recorder recorder;
         private Player player;
-        private DateTime machineStartedAt;
         private TimeSourceBase localTimeSource;
+        private RealTimeClockMode realTimeClockMode;
+
         private readonly MultiTree<IPeripheral, IRegistrationPoint> registeredPeripherals;
+        private readonly Dictionary<IBusPeripheral, BusControllerWrapper> peripheralsBusControllers;
         private readonly Dictionary<IPeripheral, string> localNames;
         private readonly HashSet<IHasOwnLife> ownLifes;
         private readonly object collectionSync;
         private readonly object pausingSync;
         private readonly object disposedSync;
+        private readonly DateTime machineCreatedAt;
+
+        /*
+         *  Variables used for memory invalidation
+         */
+        private const int InitialDirtyListLength = 1 << 10;
+        private readonly Dictionary<uint, int> firstUnbroadcastedDirtyAddressIndex;
+        private readonly List<long> invalidatedAddresses;
+        private readonly object invalidatedAddressesLock;
 
         private enum State
         {
             NotStarted,
             Started,
             Paused
+        }
+
+        private class BusControllerWrapper : BusControllerProxy
+        {
+            public BusControllerWrapper(IBusController wrappedController) : base(wrappedController)
+            {
+            }
+
+            public void ChangeWrapped(IBusController wrappedController)
+            {
+                ParentController = wrappedController;
+            }
         }
 
         private sealed class PausedState : IDisposable
