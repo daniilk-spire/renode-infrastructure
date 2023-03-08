@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -48,12 +48,18 @@ namespace Antmicro.Renode.Core
             pausedState = new PausedState(this);
             SystemBus = new SystemBus(this);
             registeredPeripherals = new MultiTree<IPeripheral, IRegistrationPoint>(SystemBus);
+            peripheralsBusControllers = new Dictionary<IBusPeripheral, BusControllerWrapper>();
             userStateHook = delegate
             {
             };
             userState = string.Empty;
             SetLocalName(SystemBus, SystemBusName);
             gdbStubs = new Dictionary<int, GdbStub>();
+
+            invalidatedAddresses = new List<long>();
+            invalidatedAddresses.Capacity = InitialDirtyListLength;
+            invalidatedAddressesLock = new object();
+            firstUnbroadcastedDirtyAddressIndex = new Dictionary<uint, int>();
 
             if(createLocalTimeSource)
             {
@@ -354,6 +360,43 @@ namespace Antmicro.Renode.Core
             return name;
         }
 
+        public IBusController RegisterBusController(IBusPeripheral peripheral, IBusController controller)
+        {
+            using(ObtainPausedState())
+            {
+                if(!peripheralsBusControllers.TryGetValue(peripheral, out var wrapper))
+                {
+                    wrapper = new BusControllerWrapper(controller);
+                    peripheralsBusControllers.Add(peripheral, wrapper);
+                }
+                else
+                {
+                    if(wrapper.ParentController != SystemBus && wrapper.ParentController != controller)
+                    {
+                        throw new RecoverableException($"Trying to change the BusController from {wrapper.ParentController} to {controller} for the {peripheral} peripheral.");
+                    }
+                    wrapper.ChangeWrapped(controller);
+                }
+                return wrapper;
+            }
+        }
+
+        public bool TryGetBusController(IBusPeripheral peripheral, out IBusController controller)
+        {
+            var exists = peripheralsBusControllers.TryGetValue(peripheral, out var wrapper);
+            controller = wrapper;
+            return exists;
+        }
+
+        public IBusController GetSystemBus(IBusPeripheral peripheral)
+        {
+            if(!TryGetBusController(peripheral, out var controller))
+            {
+                controller = RegisterBusController(peripheral, SystemBus);
+            }
+            return controller;
+        }
+
         public bool IsRegistered(IPeripheral peripheral)
         {
             lock(collectionSync)
@@ -428,11 +471,6 @@ namespace Antmicro.Renode.Core
         {
             lock(pausingSync)
             {
-                if(state == State.NotStarted)
-                {
-                    this.DebugLog("Reset request: doing nothing, because system is not started.");
-                    return;
-                }
                 using(ObtainPausedState())
                 {
                     foreach(var resetable in registeredPeripherals.Distinct())
@@ -542,10 +580,10 @@ namespace Antmicro.Renode.Core
                         action();
                     }
                 };
-                this.frequency = frequency;
                 this.machine = machine;
-                this.name = name;
-                this.owner = owner ?? machine;
+                machine.ClockSource.ExchangeClockEntryWith(
+                    action, entry => entry,
+                    factoryIfNonExistent: () => new ClockEntry(1, frequency, this.action, owner ?? machine, name, enabled: false));
             }
 
             public void Dispose()
@@ -556,9 +594,7 @@ namespace Antmicro.Renode.Core
             public void Start()
             {
                 machine.ClockSource.ExchangeClockEntryWith(
-                    action, x => x.With(enabled: true),
-                    factoryIfNonExistent: () => { clockEntryAdded = true; return new ClockEntry(1, frequency, action, owner, name, enabled: true); }
-                );
+                    action, x => x.With(enabled: true));
             }
 
             public void StartDelayed(TimeInterval delay)
@@ -570,24 +606,23 @@ namespace Antmicro.Renode.Core
                     // Let's have the first action run precisely at the specified time.
                     action();
                 };
+                var name = machine.ClockSource.GetClockEntry(action).LocalName;
                 machine.ScheduleAction(delay, startThread, name);
             }
 
             public void Stop()
             {
-                if(clockEntryAdded)
-                {
-                    machine.ClockSource.ExchangeClockEntryWith(action, x => x.With(enabled: false));
-                }
+                machine.ClockSource.ExchangeClockEntryWith(action, x => x.With(enabled: false));
             }
 
-            private bool clockEntryAdded;
+            public uint Frequency
+            {
+                get => (uint)machine.ClockSource.GetClockEntry(action).Frequency;
+                set => machine.ClockSource.ExchangeClockEntryWith(action, entry => entry.With(frequency: value));
+            }
 
             private readonly Action action;
-            private readonly uint frequency;
             private readonly Machine machine;
-            private readonly string name;
-            private readonly IEmulationElement owner;
         }
 
         private BaseClockSource clockSource;
@@ -730,6 +765,36 @@ namespace Antmicro.Renode.Core
 
                 default:
                     throw new Exception("Should not reach here");
+            }
+        }
+
+        public long[] GetNewDirtyAddressesForCore(uint id)
+        {
+            if(!firstUnbroadcastedDirtyAddressIndex.ContainsKey(id))
+            {
+                throw new ArgumentException("No entries for a core with id {0}. Was the core registered properly?");
+            }
+
+            long[] newAddresses;
+            lock(invalidatedAddressesLock)
+            {
+                var firstUnsentIndex = firstUnbroadcastedDirtyAddressIndex[id];
+                var addressesCount = invalidatedAddresses.Count - firstUnsentIndex;
+                newAddresses = invalidatedAddresses.GetRange(firstUnsentIndex, addressesCount).ToArray();
+                firstUnbroadcastedDirtyAddressIndex[id] += addressesCount;
+            }
+            return newAddresses;
+        }
+
+        public void AppendDirtyAddresses(long[] addresses)
+        {
+            lock(invalidatedAddressesLock)
+            {
+                if(invalidatedAddresses.Count + addresses.Length > invalidatedAddresses.Capacity)
+                {
+                    TryReduceBroadcastedDirtyAddresses();
+                }
+                invalidatedAddresses.AddRange(addresses);
             }
         }
 
@@ -928,10 +993,17 @@ namespace Antmicro.Renode.Core
             var currentTime = ElapsedVirtualTime.TimeElapsed;
             var startTime = currentTime + delay;
 
-            Action clockEntryHandler = () =>
+            // We can't do this in 1 assignment because we need to refer to clockEntryHandler
+            // within the body of the lambda
+            Action clockEntryHandler = null;
+            clockEntryHandler = () =>
             {
                 this.Log(LogLevel.Noisy, "{0}: Executing action scheduled at {1} (current time: {2})", name ?? "unnamed", startTime, currentTime);
                 action(currentTime);
+                if(!ClockSource.TryRemoveClockEntry(clockEntryHandler))
+                {
+                    this.Log(LogLevel.Error, "{0}: Failed to remove clock entry after running scheduled action", name ?? "unnamed");
+                }
             };
 
             ClockSource.AddClockEntry(new ClockEntry(delay.Ticks, (long)TimeInterval.TicksPerSecond, clockEntryHandler, this, name, workMode: WorkMode.OneShot));
@@ -1068,6 +1140,21 @@ namespace Antmicro.Renode.Core
         public const string UnnamedPeripheral = "[no-name]";
         public const string MachineKeyword = "machine";
         
+        private void TryReduceBroadcastedDirtyAddresses()
+        {
+            var firstUnread = firstUnbroadcastedDirtyAddressIndex.Values.Min();
+            if(firstUnread == 0)
+            {
+                return;
+            }
+
+            invalidatedAddresses.RemoveRange(0, (int)firstUnread);
+            foreach(var key in firstUnbroadcastedDirtyAddressIndex.Keys.ToArray())
+            {
+                firstUnbroadcastedDirtyAddressIndex[key] -= firstUnread;
+            }
+        }
+
         private void InnerUnregisterFromParent(IPeripheral peripheral)
         {
             using(ObtainPausedState())
@@ -1108,6 +1195,13 @@ namespace Antmicro.Renode.Core
                     var parentNode = registeredPeripherals.GetNode(parent);
                     parentNode.AddChild(peripheral, registrationPoint);
                     var ownLife = peripheral as IHasOwnLife;
+                    if(peripheral is ICPU cpu)
+                    {
+                        lock(invalidatedAddressesLock)
+                        {
+                            firstUnbroadcastedDirtyAddressIndex[cpu.Id] = 0;
+                        }
+                    }
                     if(ownLife != null)
                     {
                         ownLifes.Add(ownLife);
@@ -1388,6 +1482,19 @@ namespace Antmicro.Renode.Core
             clockSource.Advance(diff);
         }
 
+        public void PostCreationActions()
+        {
+            // Enable broadcasting dirty addresses on multicore platforms
+            var cpus = SystemBus.GetCPUs().OfType<ICPUWithMappedMemory>().ToArray();
+            if(cpus.Length > 1)
+            {
+                foreach(var cpu in cpus)
+                {
+                    cpu.SetBroadcastDirty(true);
+                }
+            }
+        }
+
         [Constructor]
         private Dictionary<int, GdbStub> gdbStubs;
         private string userState;
@@ -1403,6 +1510,7 @@ namespace Antmicro.Renode.Core
         private RealTimeClockMode realTimeClockMode;
 
         private readonly MultiTree<IPeripheral, IRegistrationPoint> registeredPeripherals;
+        private readonly Dictionary<IBusPeripheral, BusControllerWrapper> peripheralsBusControllers;
         private readonly Dictionary<IPeripheral, string> localNames;
         private readonly HashSet<IHasOwnLife> ownLifes;
         private readonly object collectionSync;
@@ -1410,11 +1518,31 @@ namespace Antmicro.Renode.Core
         private readonly object disposedSync;
         private readonly DateTime machineCreatedAt;
 
+        /*
+         *  Variables used for memory invalidation
+         */
+        private const int InitialDirtyListLength = 1 << 10;
+        private readonly Dictionary<uint, int> firstUnbroadcastedDirtyAddressIndex;
+        private readonly List<long> invalidatedAddresses;
+        private readonly object invalidatedAddressesLock;
+
         private enum State
         {
             NotStarted,
             Started,
             Paused
+        }
+
+        private class BusControllerWrapper : BusControllerProxy
+        {
+            public BusControllerWrapper(IBusController wrappedController) : base(wrappedController)
+            {
+            }
+
+            public void ChangeWrapped(IBusController wrappedController)
+            {
+                ParentController = wrappedController;
+            }
         }
 
         private sealed class PausedState : IDisposable

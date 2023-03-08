@@ -6,13 +6,13 @@
 //
 using System;
 using System.Linq;
-using System.Globalization;
 using System.Collections.Generic;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Core.Structure.Registers;
 using Antmicro.Renode.Peripherals.SPI;
 using Antmicro.Renode.Utilities;
+using Antmicro.Renode.Utilities.RESD;
 
 namespace Antmicro.Renode.Peripherals.Sensors
 {
@@ -20,20 +20,66 @@ namespace Antmicro.Renode.Peripherals.Sensors
     {
         public MAX86171(Machine machine)
         {
-            registers = new ByteRegisterCollection(this, BuildRegisterMap());
             this.machine = machine;
 
             Interrupt1 = new GPIO();
             Interrupt2 = new GPIO();
 
+            UpdateDefaultMeasurements();
+
             circularFifo = new AFESampleFIFO(this);
             measurementEnabled = new bool[MeasurementRegisterCount];
-            dataFeed = new DataFeed(this);
+
+            measurementLEDASource = new byte[MeasurementRegisterCount];
+            measurementLEDBSource = new byte[MeasurementRegisterCount];
+            measurementLEDCSource = new byte[MeasurementRegisterCount];
+
+            measurementLEDACurrent = new IValueRegisterField[MeasurementRegisterCount];
+            measurementLEDBCurrent = new IValueRegisterField[MeasurementRegisterCount];
+            measurementLEDCCurrent = new IValueRegisterField[MeasurementRegisterCount];
+
+            measurementPDARange = new uint[MeasurementRegisterCount];
+            measurementPDBRange = new uint[MeasurementRegisterCount];
+
+            measurementPDAOffset = new ushort[MeasurementRegisterCount];
+            measurementPDBOffset = new ushort[MeasurementRegisterCount];
+
+            ledRange = new IValueRegisterField[MeasurementRegisterCount];
+
+            registers = new ByteRegisterCollection(this, BuildRegisterMap());
         }
 
-        public void FeedSamplesFromBinaryFile(ReadFilePath filePath, string delayString)
+        public void FeedSamplesFromRESD(ReadFilePath filePath, uint channelId = 0, ulong startTimestamp = 0, ulong sampleOffsetTime = 0)
         {
-            dataFeed.FeedSamplesFromBinaryFile(machine, this, "fifo", filePath, delayString);
+            lock(feederThreadLock)
+            {
+                feedingSamplesFromFile = true;
+                feederThread?.Stop();
+                circularFifo.Clear();
+                resdStream?.Dispose();
+                resdStream = this.CreateRESDStream<MAX86171_AFESample>(filePath, channelId);
+                resdStream.MetadataChanged += () =>
+                {
+                    staleConfiguration = true;
+                };
+                feederThread = resdStream.StartSampleFeedThread(this, CalculateCurrentFrequency(), (sample, ts, status) =>
+                {
+                    if(status == RESDStreamStatus.OK)
+                    {
+                        circularFifo.EnqueueFrame(new AFESampleFrame(sample.Frame.Select(v => new AFESample(v)).ToArray()));
+                    }
+                    else if(status == RESDStreamStatus.AfterStream)
+                    {
+                        feedingSamplesFromFile = false;
+                        TryFeedDefaultSample();
+                    }
+                    else
+                    {
+                        circularFifo.EnqueueFrame(defaultMeasurements);
+                    }
+                }, sampleOffsetTime: sampleOffsetTime);
+                this.Log(LogLevel.Info, "Started feeding samples from RESD file at {0}Hz", CalculateCurrentFrequency());
+            }
         }
 
         public void WriteByte(long offset, byte value)
@@ -48,9 +94,6 @@ namespace Antmicro.Renode.Peripherals.Sensors
 
         public void FinishTransmission()
         {
-            Interrupt1.Set(ApplyInterruptPolarity(false, polarityInterrupt1.Value));
-            Interrupt2.Set(ApplyInterruptPolarity(false, polarityInterrupt2.Value));
-
             chosenRegister = null;
             state = null;
         }
@@ -61,11 +104,28 @@ namespace Antmicro.Renode.Peripherals.Sensors
             chosenRegister = null;
             state = null;
             circularFifo.Clear();
+            previousFifoTresholdReached = false;
+            staleConfiguration = true;
+
             for(var i = 0; i < MeasurementRegisterCount; ++i)
             {
                 measurementEnabled[i] = false;
+
+                measurementLEDASource[i] = 0;
+                measurementLEDBSource[i] = 0;
+                measurementLEDCSource[i] = 0;
+
+                measurementPDARange[i] = 0;
+                measurementPDBRange[i] = 0;
+
+                measurementPDAOffset[i] = 0;
+                measurementPDBOffset[i] = 0;
             }
             UpdateInterrupts();
+
+            feederThread?.Stop();
+            feederThread = null;
+            feedingSamplesFromFile = false;
         }
 
         public byte Transmit(byte data)
@@ -103,15 +163,101 @@ namespace Antmicro.Renode.Peripherals.Sensors
         public GPIO Interrupt1 { get; }
         public GPIO Interrupt2 { get; }
 
-        public int Measurement1ADCValue { get; set; }
-        public int Measurement2ADCValue { get; set; }
-        public int Measurement3ADCValue { get; set; }
-        public int Measurement4ADCValue { get; set; }
-        public int Measurement5ADCValue { get; set; }
-        public int Measurement6ADCValue { get; set; }
-        public int Measurement7ADCValue { get; set; }
-        public int Measurement8ADCValue { get; set; }
-        public int Measurement9ADCValue { get; set; }
+        public int Measurement1ADCValue 
+        { 
+            get => measurement1ADCValue;
+            set
+            {
+                measurement1ADCValue = value;
+                UpdateDefaultMeasurements();
+            }
+        }
+
+        public int Measurement2ADCValue 
+        { 
+            get => measurement2ADCValue;
+            set
+            {
+                measurement2ADCValue = value;
+                UpdateDefaultMeasurements();
+            }
+        }
+
+        public int Measurement3ADCValue 
+        { 
+            get => measurement3ADCValue;
+            set
+            {
+                measurement3ADCValue = value;
+                UpdateDefaultMeasurements();
+            }
+        }
+
+        public int Measurement4ADCValue 
+        { 
+            get => measurement4ADCValue;
+            set
+            {
+                measurement4ADCValue = value;
+                UpdateDefaultMeasurements();
+            }
+        }
+
+        public int Measurement5ADCValue 
+        { 
+            get => measurement5ADCValue;
+            set
+            {
+                measurement5ADCValue = value;
+                UpdateDefaultMeasurements();
+            }
+        }
+
+        public int Measurement6ADCValue 
+        { 
+            get => measurement6ADCValue;
+            set
+            {
+                measurement6ADCValue = value;
+                UpdateDefaultMeasurements();
+            }
+        }
+
+        public int Measurement7ADCValue 
+        { 
+            get => measurement7ADCValue;
+            set
+            {
+                measurement7ADCValue = value;
+                UpdateDefaultMeasurements();
+            }
+        }
+
+        public int Measurement8ADCValue 
+        { 
+            get => measurement8ADCValue;
+            set
+            {
+                measurement8ADCValue = value;
+                UpdateDefaultMeasurements();
+            }
+        }
+
+        public int Measurement9ADCValue 
+        { 
+            get => measurement9ADCValue;
+            set
+            {
+                measurement9ADCValue = value;
+                UpdateDefaultMeasurements();
+            }
+        }
+
+        private void UpdateStatus()
+        {
+            statusFifoFull.Value |= FifoThresholdReached && (!fifoAssertThresholdOnce.Value || (previousFifoTresholdReached == FifoThresholdReached));
+            previousFifoTresholdReached = FifoThresholdReached;
+        }
 
         private void UpdateInterrupts()
         {
@@ -119,13 +265,110 @@ namespace Antmicro.Renode.Peripherals.Sensors
             // GPIO ports.
 
             var interrupt1 = false;
-            interrupt1 = interrupt1FullEnabled.Value && FifoThresholdReached;
+            interrupt1 = interrupt1FullEnabled.Value && statusFifoFull.Value;;
 
             var interrupt2 = false;
-            interrupt2 = interrupt2FullEnabled.Value && FifoThresholdReached;
+            interrupt2 = interrupt2FullEnabled.Value && statusFifoFull.Value;
 
             Interrupt1.Set(ApplyInterruptPolarity(interrupt1, polarityInterrupt1.Value));
             Interrupt2.Set(ApplyInterruptPolarity(interrupt2, polarityInterrupt2.Value));
+        }
+
+        private bool CheckIfConfigurationMatches()
+        {
+            if(!staleConfiguration)
+            {
+                return true;
+            }
+
+            var currentSample = resdStream?.CurrentSample;
+            if(currentSample == null)
+            {
+                return true;
+            }
+
+            staleConfiguration = false;
+
+            var metadataMatches = true;
+            foreach(var channel in ActiveChannels.Cast<int>())
+            {
+                var channelId = channel + 1;
+                var nonMatchingMetadata = new List<String>();
+                if(currentSample.ConfigLedAExposure[channelId].HasValue && CalculateExposure(measurementLEDACurrent[channel].Value, ledRange[channel].Value, out var ledAExposure) != currentSample.ConfigLedAExposure[channelId])
+                {
+                    nonMatchingMetadata.Add($"LED A exposure (expected: {currentSample.ConfigLedAExposure[channelId]}, got: {ledAExposure})");
+                }
+                if(currentSample.ConfigLedBExposure[channelId].HasValue && CalculateExposure(measurementLEDBCurrent[channel].Value, ledRange[channel].Value, out var ledBExposure) != currentSample.ConfigLedBExposure[channelId])
+                {
+                    nonMatchingMetadata.Add($"LED B exposure (expected: {currentSample.ConfigLedBExposure[channelId]}, got: {ledBExposure})");
+                }
+                if(currentSample.ConfigLedCExposure[channelId].HasValue && CalculateExposure(measurementLEDCCurrent[channel].Value, ledRange[channel].Value, out var ledCExposure) != currentSample.ConfigLedCExposure[channelId])
+                {
+                    nonMatchingMetadata.Add($"LED C exposure (expected: {currentSample.ConfigLedCExposure[channelId]}, got: {ledCExposure})");
+                }
+                if(currentSample.ConfigLedASource[channelId].HasValue && measurementLEDASource[channel] != currentSample.ConfigLedASource[channelId])
+                {
+                    nonMatchingMetadata.Add($"LED A source (expected: {measurementLEDASource[channel]}, got: {currentSample.ConfigLedASource[channelId]})");
+                }
+                if(currentSample.ConfigLedBSource[channelId].HasValue && measurementLEDBSource[channel] != currentSample.ConfigLedBSource[channelId])
+                {
+                    nonMatchingMetadata.Add($"LED B source (expected: {measurementLEDBSource[channel]}, got: {currentSample.ConfigLedBSource[channelId]})");
+                }
+                if(currentSample.ConfigLedCSource[channelId].HasValue && measurementLEDCSource[channel] != currentSample.ConfigLedCSource[channelId])
+                {
+                    nonMatchingMetadata.Add($"LED C source (expected: {measurementLEDCSource[channel]}, got: {currentSample.ConfigLedCSource[channelId]})");
+                }
+                if(currentSample.ConfigPD1ADCRange[channelId].HasValue && measurementPDARange[channel] != currentSample.ConfigPD1ADCRange[channelId])
+                {
+                    nonMatchingMetadata.Add($"PD A ADC range (expected: {measurementPDARange[channel]}, got: {currentSample.ConfigPD1ADCRange[channel]})");
+                }
+                if(currentSample.ConfigPD2ADCRange[channelId].HasValue && measurementPDBRange[channel] != currentSample.ConfigPD2ADCRange[channelId])
+                {
+                    nonMatchingMetadata.Add($"PD B ADC range (expected: {measurementPDBRange[channel]}, got: {currentSample.ConfigPD2ADCRange[channelId]})");
+                }
+                if(currentSample.ConfigPD1DACOffset[channelId].HasValue && measurementPDAOffset[channel] != currentSample.ConfigPD1DACOffset[channelId])
+                {
+                    nonMatchingMetadata.Add($"PD A DAC offset (expected: {measurementPDAOffset[channel]}, got: {currentSample.ConfigPD1DACOffset[channelId]})");
+                }
+                if(currentSample.ConfigPD2DACOffset[channelId].HasValue && measurementPDBOffset[channel] != currentSample.ConfigPD2DACOffset[channelId])
+                {
+                    nonMatchingMetadata.Add($"PD B DAC offset (expected: {measurementPDBOffset[channel]}, got: {currentSample.ConfigPD2DACOffset[channelId]})");
+                }
+
+                if(nonMatchingMetadata.Count > 0)
+                {
+                    metadataMatches = false;
+                    this.Log(LogLevel.Warning, "Measurement {0} has non-matching configuration, found differences in: {1}",
+                        channel + 1,
+                        string.Join(", ", nonMatchingMetadata));
+                }
+            }
+
+            return metadataMatches;
+        }
+
+        private uint CalculateExposure(uint driveCurrent, uint ledRange, out uint exposure)
+        {
+            uint multiplier;
+            switch(ledRange)
+            {
+                case 0:
+                    multiplier = 125;
+                    break;
+                case 1:
+                    multiplier = 250;
+                    break;
+                case 2:
+                    multiplier = 375;
+                    break;
+                case 3:
+                    multiplier = 500;
+                    break;
+                default:
+                    throw new Exception("unreachable code");
+            }
+            exposure = driveCurrent * multiplier;
+            return exposure;
         }
 
         private bool ApplyInterruptPolarity(bool value, OutputPinPolarity polarity)
@@ -201,8 +444,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
             var registerMap = new Dictionary<long, ByteRegister>()
             {
                 {(long)Registers.Status1, new ByteRegister(this)
-                    .WithFlag(0, FieldMode.Read, name: "STATUS1.a_full",
-                        valueProviderCallback: _ => FifoThresholdReached)
+                    .WithFlag(0, out statusFifoFull, FieldMode.ReadToClear, name: "STATUS1.a_full")
                     .WithTaggedFlag("STATUS1.frame_rdy", 1)
                     .WithTaggedFlag("STATUS1.fifo_data_rdy", 2)
                     .WithTaggedFlag("STATUS1.alc_ovf", 3)
@@ -229,13 +471,42 @@ namespace Antmicro.Renode.Peripherals.Sensors
                 },
                 {(long)Registers.FIFOData, new ByteRegister(this)
                     .WithValueField(0, 8, FieldMode.Read, name: "FIFO_DATA.data",
-                        valueProviderCallback: _ => circularFifo.DequeueByte())
+                        valueProviderCallback: _ =>
+                        {
+                            CheckIfConfigurationMatches();
+                            var output = circularFifo.DequeueByte();
+                            if(clearFlagsOnRead.Value)
+                            {
+                                statusFifoFull.Value = false;
+                                UpdateInterrupts();
+                            }
+                            return output;
+                        })
                 },
                 {(long)Registers.FIFOConfiguration1, new ByteRegister(this)
                     .WithValueField(0, 8, out fifoFullThreshold, name: "FIFO_CONF1.fifo_a_full")
                     .WithChangeCallback((_, __) => UpdateInterrupts())
                 },
-                {(long)Registers.FIFOConfiguration2, CreateDummyRegister("FIFO_CONF2.data")},
+                {(long)Registers.FIFOConfiguration2, new ByteRegister(this)
+                    .WithReservedBits(0, 1)
+                    .WithFlag(1, name: "FIFO_CONF2.fifo_ro",
+                        valueProviderCallback: _ => circularFifo.Rollover,
+                        writeCallback: (_, value) => circularFifo.Rollover = value)
+                    .WithFlag(2, out fifoAssertThresholdOnce, name: "FIFO_CONF2.a_full_type")
+                    .WithFlag(3, out clearFlagsOnRead, name: "FIFO_CONF2.fifo_stat_clr")
+                    .WithFlag(4, FieldMode.WriteOneToClear | FieldMode.Read, name: "FIFO_CONF2.flush_fifo",
+                        writeCallback: (_, value) => 
+                        { 
+                            if(value) 
+                            {
+                                circularFifo.Clear(); 
+
+                                statusFifoFull.Value = false;
+                                UpdateInterrupts();
+                            }
+                        })
+                    .WithReservedBits(5, 3)
+                },
                 {(long)Registers.SystemConfiguration1, new ByteRegister(this)
                     .WithFlag(0, name: "SYSTEM_CONF1.reset",
                         valueProviderCallback: _ => false,
@@ -249,12 +520,20 @@ namespace Antmicro.Renode.Peripherals.Sensors
                     .WithFlag(6, name: "SYSTEM_CONF1.sw_force_sync")
                     .WithFlag(7, name: "SYSTEM_CONF1.meas9_en",
                         valueProviderCallback: _ => measurementEnabled[(int)Channel.Measurement9],
-                        writeCallback: (_, value) => measurementEnabled[(int)Channel.Measurement9] = value)
+                        changeCallback: (_, value) => 
+                        { 
+                            measurementEnabled[(int)Channel.Measurement9] = value;
+                            TryFeedDefaultSample();
+                        })
                 },
                 {(long)Registers.SystemConfiguration2, new ByteRegister(this)
                     .WithFlags(0, 8, name: "SYSTEM_CONF2.MEASX_EN",
                         valueProviderCallback: (idx, _) => measurementEnabled[idx],
-                        writeCallback: (idx, _, value) => measurementEnabled[idx] = value)
+                        changeCallback: (idx, _, value) =>
+                        {
+                            measurementEnabled[idx] = value;
+                            TryFeedDefaultSample();
+                        })
                 },
                 {(long)Registers.SystemConfiguration3, CreateDummyRegister("SYSTEM_CONF3.data")},
                 {(long)Registers.PhotodiodeBias, CreateDummyRegister("PHOTO_BIAS.data")},
@@ -266,9 +545,21 @@ namespace Antmicro.Renode.Peripherals.Sensors
                     .WithReservedBits(5, 3)
                     .WithChangeCallback((_, __) => UpdateInterrupts())
                 },
-                {(long)Registers.FrameRateClockFrequency, CreateDummyRegister("FR_CLK_FREQ.data")},
-                {(long)Registers.FrameRateClockDividerMSB, CreateDummyRegister("FR_CLK_DIVMSB.data")},
-                {(long)Registers.FrameRateClockDividerLSB, CreateDummyRegister("FR_CLK_DIVLSB.data")},
+                {(long)Registers.FrameRateClockFrequency, new ByteRegister(this, 0x20)
+                    .WithTag("FR_CLK.fine_tune", 0, 5)
+                    .WithFlag(5, out clockSelect, name: "FR_CLK.sel")
+                    .WithReservedBits(6, 2)
+                    .WithChangeCallback((_, __) => UpdateFrequency())
+                },
+                {(long)Registers.FrameRateClockDividerMSB, new ByteRegister(this, 0x1)
+                    .WithValueField(0, 7, out clockDividerHigh, name: "FR_CLK.div_h")
+                    .WithReservedBits(7, 1)
+                    .WithChangeCallback((_, __) => UpdateFrequency())
+                },
+                {(long)Registers.FrameRateClockDividerLSB, new ByteRegister(this)
+                    .WithValueField(0, 8, out clockDividerLow, name: "FR_CLK.div_l")
+                    .WithChangeCallback((_, __) => UpdateFrequency())
+                },
                 {(long)Registers.ThresholdMeasurementSelect, CreateDummyRegister("THRESH_MEAS_SEL.data")},
                 {(long)Registers.ThresholdHysteresis, CreateDummyRegister("THRESH_HYST.data")},
                 {(long)Registers.PPGHiThreshold1, CreateDummyRegister("PPG_HI_THRESH1.data")},
@@ -310,20 +601,190 @@ namespace Antmicro.Renode.Peripherals.Sensors
                 {(long)Registers.PartID, CreateDummyRegister("PART_ID.part_id", 0x2C)}
             };
 
-            for(var i = 0; i <= MeasurementRegisterCount; ++i)
+            for(var i = 0; i < MeasurementRegisterCount; ++i)
             {
                 var offset = i * 0x8;
+                var j = i;
 
-                registerMap.Add((long)Registers.Measurement1Select + offset, CreateDummyRegister($"MEAS{i+1}_SELECTS.data"));
+                registerMap.Add((long)Registers.Measurement1Select + offset, new ByteRegister(this)
+                    .WithValueField(0, 2, name: $"MEAS{i+1}_SELECTS.meas{i+1}_drva",
+                        writeCallback: (_, value) =>
+                        {
+                            // Map register value to LED source index
+                            switch(value)
+                            {
+                                case 0:
+                                    measurementLEDASource[j] = 1;
+                                    break;
+                                case 1:
+                                    measurementLEDASource[j] = 2;
+                                    break;
+                                case 2:
+                                    measurementLEDASource[j] = 4;
+                                    break;
+                                case 3:
+                                    measurementLEDASource[j] = 7;
+                                    break;
+                                default:
+                                    throw new Exception("unreachable code");
+                            }
+                        })
+                    .WithValueField(2, 2, name: $"MEAS{i+1}_SELECTS.meas{i+1}_drvb",
+                        writeCallback: (_, value) =>
+                        {
+                            // Map register value to LED source index
+                            switch(value)
+                            {
+                                case 0:
+                                    measurementLEDBSource[j] = 2;
+                                    break;
+                                case 1:
+                                    measurementLEDBSource[j] = 3;
+                                    break;
+                                case 2:
+                                    measurementLEDBSource[j] = 5;
+                                    break;
+                                case 3:
+                                    measurementLEDBSource[j] = 8;
+                                    break;
+                                default:
+                                    throw new Exception("unreachable code");
+                            }
+                        })
+                    .WithValueField(4, 2, name: $"MEAS{i+1}_SELECTS.meas{i+1}_drvc",
+                        writeCallback: (_, value) =>
+                        {
+                            // Map register value to LED source index
+                            switch(value)
+                            {
+                                case 0:
+                                    measurementLEDCSource[j] = 1;
+                                    break;
+                                case 1:
+                                    measurementLEDCSource[j] = 3;
+                                    break;
+                                case 2:
+                                    measurementLEDCSource[j] = 6;
+                                    break;
+                                case 3:
+                                    measurementLEDCSource[j] = 9;
+                                    break;
+                                default:
+                                    throw new Exception("unreachable code");
+                            }
+                        })
+                    .WithFlag(6, name: $"MEAS{i+1}_SELECTS.meas{i+1}_amb")
+                    .WithReservedBits(7, 1)
+                    .WithChangeCallback((_, __) => staleConfiguration = true));
                 registerMap.Add((long)Registers.Measurement1Configuration1 + offset, CreateDummyRegister($"MEAS{i+1}_CONF1.data"));
-                registerMap.Add((long)Registers.Measurement1Configuration2 + offset, CreateDummyRegister($"MEAS{i+1}_CONF2.data"));
-                registerMap.Add((long)Registers.Measurement1Configuration3 + offset, CreateDummyRegister($"MEAS{i+1}_CONF3.data"));
-                registerMap.Add((long)Registers.Measurement1DriverACurrent + offset, CreateDummyRegister($"MEAS{i+1}_DRVA_CURRENT.data"));
-                registerMap.Add((long)Registers.Measurement1DriverBCurrent + offset, CreateDummyRegister($"MEAS{i+1}_DRVB_CURRENT.data"));
-                registerMap.Add((long)Registers.Measurement1DriverCCurrent + offset, CreateDummyRegister($"MEAS{i+1}_DRVC_CURRENT.data"));
+                registerMap.Add((long)Registers.Measurement1Configuration2 + offset, new ByteRegister(this, 0x3A)
+                    .WithValueField(0, 2, name: $"MEAS{i+1}_CONF2.meas{i+1}_ppg1_adc_rge",
+                        writeCallback: (_, value) => measurementPDARange[j] = (uint)(4 << (int)value))
+                    .WithValueField(2, 2, name: $"MEAS{i+1}_CONF2.meas{i+1}_ppg2_adc_rge",
+                        writeCallback: (_, value) => measurementPDBRange[j] = (uint)(4 << (int)value))
+                    .WithValueField(4, 2, out ledRange[i], name: $"MEAS{i+1}_CONF2.meas{i+1}_led_rge")
+                    .WithFlag(6, name: $"MEAS{i+1}_CONF2.meas{i+1}_filt_sel")
+                    .WithFlag(7, name: $"MEAS{i+1}_CONF2.meas{i+1}_sinc3_sel")
+                    .WithChangeCallback((_, __) => staleConfiguration = true));
+                registerMap.Add((long)Registers.Measurement1Configuration3 + offset, new ByteRegister(this, 0x50)
+                    .WithValueField(0, 2, name: $"MEAS{i+1}_CONF3.meas{i+1}_ppg1_dacoff",
+                        writeCallback: (_, value) => measurementPDAOffset[j] = (ushort)(8 * value))
+                    .WithValueField(2, 2, name: $"MEAS{i+1}_CONF3.meas{i+1}_ppg2_dacoff",
+                        writeCallback: (_, value) => measurementPDBOffset[j] = (ushort)(8 * value))
+                    .WithValueField(4, 2, name: $"MEAS{i+1}_CONF3.meas{i+1}_led_setlng")
+                    .WithValueField(6, 2, name: $"MEAS{i+1}_CONF3.meas{i+1}_pd_setlng")
+                    .WithChangeCallback((_, __) => staleConfiguration = true));
+                registerMap.Add((long)Registers.Measurement1DriverACurrent + offset, new ByteRegister(this)
+                    .WithValueField(0, 8, out measurementLEDACurrent[i], name: $"MEAS{i+1}_DRVA_CURRENT.data")
+                    .WithChangeCallback((_, __) => staleConfiguration = true));
+                registerMap.Add((long)Registers.Measurement1DriverBCurrent + offset, new ByteRegister(this)
+                    .WithValueField(0, 8, out measurementLEDBCurrent[i], name: $"MEAS{i+1}_DRVB_CURRENT.data")
+                    .WithChangeCallback((_, __) => staleConfiguration = true));
+                registerMap.Add((long)Registers.Measurement1DriverCCurrent + offset, new ByteRegister(this)
+                    .WithValueField(0, 8, out measurementLEDCCurrent[i], name: $"MEAS{i+1}_DRVC_CURRENT.data")
+                    .WithChangeCallback((_, __) => staleConfiguration = true));
             }
 
             return registerMap;
+        }
+
+        private bool TryFeedDefaultSample()
+        {
+            lock(feederThreadLock)
+            {
+                if(feedingSamplesFromFile)
+                {
+                    return false;
+                }
+
+                feederThread?.Stop();
+                if(measurementEnabled.Any(x => x))
+                {
+                    var freq = CalculateCurrentFrequency();
+                    this.Log(LogLevel.Info, "Starting the default sample feeding at {0}Hz", freq);
+
+                    Action feedSample = () =>
+                    {
+                        circularFifo.EnqueueFrame(defaultMeasurements);
+                    };
+
+                    Func<bool> stopCondition = () =>
+                    {
+                        return feedingSamplesFromFile;
+                    };
+
+
+                    feederThread = machine.ObtainManagedThread(feedSample, freq, "default_sample_afe", this, stopCondition);
+                    feederThread.Start();
+
+                    return true;
+                }
+
+                return false;
+            }
+        }
+
+        private void UpdateDefaultMeasurements()
+        {
+            var ch1 = new AFESample(SampleSource.PPGMeasurement1, Measurement1ADCValue);
+            var ch2 = new AFESample(SampleSource.PPGMeasurement2, Measurement2ADCValue);
+            var ch3 = new AFESample(SampleSource.PPGMeasurement3, Measurement3ADCValue);
+            var ch4 = new AFESample(SampleSource.PPGMeasurement4, Measurement4ADCValue);
+            var ch5 = new AFESample(SampleSource.PPGMeasurement5, Measurement5ADCValue);
+            var ch6 = new AFESample(SampleSource.PPGMeasurement6, Measurement6ADCValue);
+            var ch7 = new AFESample(SampleSource.PPGMeasurement7, Measurement7ADCValue);
+            var ch8 = new AFESample(SampleSource.PPGMeasurement8, Measurement8ADCValue);
+            var ch9 = new AFESample(SampleSource.PPGMeasurement9, Measurement9ADCValue);
+
+            // fifo requires two samples per channel
+            defaultMeasurements = new AFESampleFrame(new []
+            {
+                ch1, ch1,
+                ch2, ch2,
+                ch3, ch3,
+                ch4, ch4,
+                ch5, ch5,
+                ch6, ch6,
+                ch7, ch7,
+                ch8, ch8,
+                ch9, ch9
+            });
+        }
+
+        private void UpdateFrequency()
+        {
+            if(feederThread != null)
+            {
+                feederThread.Frequency = CalculateCurrentFrequency();
+            }
+        }
+
+        public uint CalculateCurrentFrequency()
+        {
+            var clockBaseFrequency = clockSelect.Value
+                ? 32768u
+                : 32000u;
+            return clockBaseFrequency / ((clockDividerHigh.Value << 8) + clockDividerLow.Value);
         }
 
         private IEnumerable<Channel> ActiveChannels =>
@@ -334,15 +795,57 @@ namespace Antmicro.Renode.Peripherals.Sensors
 
         private readonly Machine machine;
         private readonly ByteRegisterCollection registers;
-        private readonly DataFeed dataFeed;
         private readonly AFESampleFIFO circularFifo;
         private readonly bool[] measurementEnabled;
+        private readonly object feederThreadLock = new object();
 
+        private readonly byte[] measurementLEDASource;
+        private readonly byte[] measurementLEDBSource;
+        private readonly byte[] measurementLEDCSource;
+
+        private readonly uint[] measurementPDARange;
+        private readonly uint[] measurementPDBRange;
+
+        private readonly ushort[] measurementPDAOffset;
+        private readonly ushort[] measurementPDBOffset;
+
+        private bool feedingSamplesFromFile;
+        private bool staleConfiguration;
+
+        private int measurement1ADCValue;
+        private int measurement2ADCValue;
+        private int measurement3ADCValue;
+        private int measurement4ADCValue;
+        private int measurement5ADCValue;
+        private int measurement6ADCValue;
+        private int measurement7ADCValue;
+        private int measurement8ADCValue;
+        private int measurement9ADCValue;
+
+        private AFESampleFrame defaultMeasurements;
+        private IManagedThread feederThread;
+        private RESDStream<MAX86171_AFESample> resdStream;
         private States? state;
         private Registers? chosenRegister;
+        private bool previousFifoTresholdReached;
+
+        private IFlagRegisterField statusFifoFull;
+
+        private IFlagRegisterField clockSelect;
+        private IValueRegisterField clockDividerHigh;
+        private IValueRegisterField clockDividerLow;
+
+        private IValueRegisterField[] measurementLEDACurrent;
+        private IValueRegisterField[] measurementLEDBCurrent;
+        private IValueRegisterField[] measurementLEDCCurrent;
+
+        private IValueRegisterField[] ledRange;
 
         private IFlagRegisterField interrupt1FullEnabled;
         private IFlagRegisterField interrupt2FullEnabled;
+
+        private IFlagRegisterField fifoAssertThresholdOnce;
+        private IFlagRegisterField clearFlagsOnRead;
 
         private IValueRegisterField fifoFullThreshold;
 
@@ -352,6 +855,89 @@ namespace Antmicro.Renode.Peripherals.Sensors
         private const int MeasurementRegisterCount = 9;
         private const int MaximumFIFOCount = 256;
 
+        [SampleType(SampleType.Custom)]
+        private class MAX86171_AFESample : RESDSample
+        {
+            public override int? Width => null;
+
+            public int[] Frame { get; private set; }
+
+            public ushort?[] ConfigLedAExposure => Enumerable.Range(0, MaxChannels).Select(i =>
+                Metadata.TryGetValue($"meas{i}_led_a_exposure", out var value) ? value.As<ushort?>() : null
+            ).ToArray();
+
+            public byte?[] ConfigLedASource => Enumerable.Range(0, MaxChannels).Select(i =>
+                Metadata.TryGetValue($"meas{i}_led_a_source", out var value) ? value.As<byte?>() : null
+            ).ToArray();
+
+            public ushort?[] ConfigLedBExposure => Enumerable.Range(0, MaxChannels).Select(i =>
+                Metadata.TryGetValue($"meas{i}_led_b_exposure", out var value) ? value.As<ushort?>() : null
+            ).ToArray();
+
+            public byte?[] ConfigLedBSource => Enumerable.Range(0, MaxChannels).Select(i =>
+                Metadata.TryGetValue($"meas{i}_led_b_source", out var value) ? value.As<byte?>() : null
+            ).ToArray();
+
+            public ushort?[] ConfigLedCExposure => Enumerable.Range(0, MaxChannels).Select(i =>
+                Metadata.TryGetValue($"meas{i}_led_c_exposure", out var value) ? value.As<ushort?>() : null
+            ).ToArray();
+
+            public byte?[] ConfigLedCSource => Enumerable.Range(0, MaxChannels).Select(i =>
+                Metadata.TryGetValue($"meas{i}_led_c_source", out var value) ? value.As<byte?>() : null
+            ).ToArray();
+
+            public byte?[] ConfigPD1SourceFlags => Enumerable.Range(0, MaxChannels).Select(i =>
+                Metadata.TryGetValue($"meas{i}_pd_a_source_flags", out var value) ? value.As<byte?>() : null
+            ).ToArray();
+
+            public uint?[] ConfigPD1ADCRange => Enumerable.Range(0, MaxChannels).Select(i =>
+                Metadata.TryGetValue($"meas{i}_pd_a_adc_range", out var value) ? value.As<uint?>() : null
+            ).ToArray();
+
+            public short?[] ConfigPD1DACOffset => Enumerable.Range(0, MaxChannels).Select(i =>
+                Metadata.TryGetValue($"meas{i}_pd_a_dac_offset", out var value) ? value.As<short?>() : null
+            ).ToArray();
+
+            public byte?[] ConfigPD2SourceFlags => Enumerable.Range(0, MaxChannels).Select(i =>
+                Metadata.TryGetValue($"meas{i}_pd_b_source_flags", out var value) ? value.As<byte?>() : null
+            ).ToArray();
+
+            public uint?[] ConfigPD2ADCRange => Enumerable.Range(0, MaxChannels).Select(i =>
+                Metadata.TryGetValue($"meas{i}_pd_b_adc_range", out var value) ? value.As<uint?>() : null
+            ).ToArray();
+
+            public short?[] ConfigPD2DACOffset => Enumerable.Range(0, MaxChannels).Select(i =>
+                Metadata.TryGetValue($"meas{i}_pd_b_dac_offset", out var value) ? value.As<short?>() : null
+            ).ToArray();
+
+            public override bool TryReadFromStream(SafeBinaryReader reader)
+            {
+                var frameLength = reader.ReadByte();
+                var currentFrame = new int[frameLength];
+
+                for(var i = 0; i < frameLength; ++i)
+                {
+                    currentFrame[i] = reader.ReadInt32();
+                }
+
+                Frame = currentFrame;
+                return true;
+            }
+
+            public override bool Skip(SafeBinaryReader reader, int count)
+            {
+                for(var i = 0; i < count; ++i)
+                {
+                    var frameLength = reader.ReadByte();
+                    reader.SkipBytes(frameLength * 4);
+                }
+
+                return true;
+            }
+
+            private const int MaxChannels = 9;
+        }
+
         private class AFESampleFIFO
         {
             public AFESampleFIFO(MAX86171 parent)
@@ -360,14 +946,52 @@ namespace Antmicro.Renode.Peripherals.Sensors
                 this.parent = parent;
             }
 
+            public void EnqueueFrame(AFESampleFrame frame)
+            {
+                var activeChannels = parent.ActiveChannels.ToList();
+                var channelsInData = new List<Channel>();
+                foreach(var samplePair in frame.SamplePairs)
+                {
+                    var channel = SampleSourceToChannel(samplePair[0].Tag);
+                    if(!channel.HasValue || !activeChannels.Contains(channel.Value))
+                    {
+                        continue;
+                    }
+                    channelsInData.Add(channel.Value);
+
+                    foreach(var sample in samplePair)
+                    {
+                        parent.circularFifo.EnqueueSample(sample);
+                    }
+                }
+
+                var missingChannels = activeChannels.Except(channelsInData).ToList();
+                if(missingChannels.Count > 0)
+                {
+                    parent.Log(LogLevel.Warning, "Provided sample data is missing samples for {0} channels: {1}",
+                        missingChannels.Count,
+                        string.Join(", ", missingChannels.Select(chan => chan.ToString())));
+                }
+
+                parent.UpdateStatus();
+                parent.UpdateInterrupts();
+            }
+
             public void EnqueueSample(AFESample sample)
             {
-                samples.Enqueue(sample);
-                if(samples.Count > MaximumFIFOCount)
+                if(samples.Count == MaximumFIFOCount)
                 {
                     parent.Log(LogLevel.Warning, "Sample FIFO overrun");
-                    samples.Dequeue();
+                    if(Rollover)
+                    {
+                        samples.Dequeue();
+                    }
+                    else
+                    {
+                        return;
+                    }
                 }
+                samples.Enqueue(sample);
             }
 
             public byte DequeueByte()
@@ -392,122 +1016,6 @@ namespace Antmicro.Renode.Peripherals.Sensors
             public void Clear()
             {
                 samples.Clear();
-            }
-
-            public uint Count => (uint)samples.Count;
-
-            private IEnumerator<byte> currentSampleEnumerator;
-
-            private readonly Queue<AFESample> samples;
-            private readonly MAX86171 parent;
-        }
-
-        private struct AFESample
-        {
-            public AFESample(decimal packet)
-            {
-                innerPacket = (int)packet;
-            }
-
-            public int Value => (innerPacket & 0x0FFFFF);
-            public SampleSource Tag => (SampleSource)((innerPacket & 0xF00000) >> 20);
-            public byte Byte1 => (byte)((innerPacket & 0xFF0000) >> 16);
-            public byte Byte2 => (byte)((innerPacket & 0x00FF00) >> 8);
-            public byte Byte3 => (byte)(innerPacket & 0x0000FF);
-            public byte[] Bytes => new byte[] { Byte1, Byte2, Byte3 };
-            public IEnumerator<byte> Enumerator => Bytes.OfType<byte>().GetEnumerator();
-
-            private readonly int innerPacket;
-        }
-
-        private class SensorSampleMeasurements : SensorSample
-        {
-            public override void Load(IList<decimal> data)
-            {
-                packets = data.Select(sample => new AFESample(sample)).ToArray();
-            }
-
-            public override bool TryLoad(params string[] data)
-            {
-                var samples = new List<decimal>();
-                foreach(var str in data)
-                {
-                    if(!decimal.TryParse(str, NumberStyles.Any, CultureInfo.InvariantCulture, out var sample))
-                    {
-                        return false;
-                    }
-                    samples.Add(sample);
-                }
-
-                Load(samples);
-                return true;
-            }
-
-            public IEnumerable<AFESample[]> SamplePairs
-            {
-                get
-                {
-                    var i = 0;
-                    while(i < packets.Length)
-                    {
-                        if((i + 1) >= packets.Length || packets[i].Tag != packets[i + 1].Tag)
-                        {
-                            Logger.Log(LogLevel.Warning, "Missing second sample for {0}", packets[i].Tag);
-                            i += 1;
-                            continue;
-                        }
-
-                        if(i > 0 && packets[i - 1].Tag > packets[i].Tag)
-                        {
-                            Logger.Log(LogLevel.Warning, "Invalid order of samples: {0} is before {1}", packets[i - 1].Tag, packets[i].Tag);
-                        }
-
-                        yield return new AFESample[2] { packets[i], packets[i + 1] };
-                        i += 2;
-                    }
-                }
-            }
-
-            public AFESample[] Packets => packets;
-
-            private AFESample[] packets;
-        }
-
-        private class DataFeed : SensorSamplesFifo<SensorSampleMeasurements>
-        {
-            public DataFeed(MAX86171 parent) : base()
-            {
-                this.parent = parent;
-            }
-
-            public override void FeedSample(SensorSampleMeasurements measurements)
-            {
-                var activeChannels = parent.ActiveChannels.ToList();
-                var channelsInData = new List<Channel>();
-                foreach(var samplePair in measurements.SamplePairs)
-                {
-                    var channel = SampleSourceToChannel(samplePair[0].Tag);
-                    if(!channel.HasValue || !activeChannels.Contains(channel.Value))
-                    {
-                        continue;
-                    }
-                    channelsInData.Add(channel.Value);
-
-                    foreach(var sample in samplePair)
-                    {
-                        parent.circularFifo.EnqueueSample(sample);
-                    }
-                }
-
-                var missingChannels = activeChannels.Except(channelsInData).ToList();
-                if(missingChannels.Count > 0)
-                {
-                    parent.Log(LogLevel.Warning, "Provided sample data is missing samples for {0} channels: {1}",
-                        missingChannels.Count,
-                        string.Join(", ", missingChannels.Select(chan => chan.ToString())));
-                }
-
-                parent.UpdateInterrupts();
             }
 
             private Channel? SampleSourceToChannel(SampleSource ss)
@@ -537,7 +1045,76 @@ namespace Antmicro.Renode.Peripherals.Sensors
                 }
             }
 
+            public bool Rollover { get; set; }
+            public uint Count => (uint)samples.Count;
+
+            private IEnumerator<byte> currentSampleEnumerator;
+
+            private readonly Queue<AFESample> samples;
             private readonly MAX86171 parent;
+        }
+
+        private struct AFESample
+        {
+            public AFESample(decimal packet)
+            {
+                innerPacket = (int)packet;
+            }
+
+            public AFESample(SampleSource tag, int value)
+            {
+                innerPacket = (((int)tag & 0xF) << 20) | (value & 0x0FFFFF);
+            }
+
+            public int Value => (innerPacket & 0x0FFFFF);
+            public SampleSource Tag => (SampleSource)((innerPacket & 0xF00000) >> 20);
+            public byte Byte1 => (byte)((innerPacket & 0xFF0000) >> 16);
+            public byte Byte2 => (byte)((innerPacket & 0x00FF00) >> 8);
+            public byte Byte3 => (byte)(innerPacket & 0x0000FF);
+            public byte[] Bytes => new byte[] { Byte1, Byte2, Byte3 };
+            public IEnumerator<byte> Enumerator => Bytes.OfType<byte>().GetEnumerator();
+
+            public override string ToString()
+            {
+                return $"{Tag}: {Value}";
+            }
+
+            private readonly int innerPacket;
+        }
+
+        private class AFESampleFrame
+        {
+            public AFESampleFrame(AFESample[] samples)
+            {
+                this.samples = samples;
+            }
+
+            public IEnumerable<AFESample[]> SamplePairs
+            {
+                get
+                {
+                    var i = 0;
+                    while(i < samples.Length)
+                    {
+                        if((i + 1) >= samples.Length || samples[i].Tag != samples[i + 1].Tag)
+                        {
+                            Logger.Log(LogLevel.Warning, "Missing second sample for {0}", samples[i].Tag);
+                            i += 1;
+                            continue;
+                        }
+
+                        if(i > 0 && samples[i - 1].Tag > samples[i].Tag)
+                        {
+                            Logger.Log(LogLevel.Warning, "Invalid order of samples: {0} is before {1}", samples[i - 1].Tag, samples[i].Tag);
+                        }
+
+                        yield return new AFESample[2] { samples[i], samples[i + 1] };
+                        i += 2;
+                    }
+                }
+            }
+
+            private AFESample[] samples;
         }
 
         private enum SampleSource : byte

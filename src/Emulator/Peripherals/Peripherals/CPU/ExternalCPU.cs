@@ -21,9 +21,6 @@ namespace Antmicro.Renode.Peripherals.CPU
         public ExternalCPU(string cpuType, Machine machine, Endianess endianness, CpuBitness bitness = CpuBitness.Bits32)
             : base(0, cpuType, machine, endianness, bitness)
         {
-            CyclesPerInstruction = 1;
-            singleStepSynchronizer = new Synchronizer();
-
             throw new Exception("This is only a stub class that should not be directly used in a platform");
         }
 
@@ -88,76 +85,7 @@ namespace Antmicro.Renode.Peripherals.CPU
             }
         }
 
-        public override ExecutionMode ExecutionMode
-        {
-            get
-            {
-                return executionMode;
-            }
-
-            set
-            {
-                lock(singleStepSynchronizer.Guard)
-                {
-                    if(executionMode == value)
-                    {
-                        return;
-                    }
-
-                    executionMode = value;
-
-                    singleStepSynchronizer.Enabled = IsSingleStepMode;
-                    UpdateHaltedState();
-                }
-            }
-        }
-        
-        protected virtual void InitializeRegisters()
-        {
-        }
-
-        protected override void UpdateHaltedState(bool ignoreExecutionMode = false)
-        {
-            var shouldBeHalted = (isHaltedRequested || (executionMode == ExecutionMode.SingleStepNonBlocking && !ignoreExecutionMode));
-
-            if(shouldBeHalted == currentHaltedState)
-            {
-                return;
-            }
-
-            lock(pauseLock)
-            {
-                this.Trace();
-                currentHaltedState = shouldBeHalted;
-                if(TimeHandle != null)
-                {
-                    this.Trace();
-                    TimeHandle.DeferredEnabled = !shouldBeHalted;
-                }
-            }
-        }
-
         public override ulong ExecutedInstructions => totalExecutedInstructions;
-
-        protected override void RequestPause()
-        {
-            lock(pauseLock)
-            {
-                isPaused = true;
-                this.Trace("Requesting pause");
-                sleeper.Interrupt();
-            }
-        }
-
-        protected override void InnerPause(bool onCpuThread, bool checkPauseGuard)
-        {
-            RequestPause();
-
-            if(onCpuThread)
-            {
-                TimeHandle.Interrupt();
-            }
-        }
 
         protected override ExecutionResult ExecuteInstructions(ulong numberOfInstructionsToExecute, out ulong numberOfExecutedInstructions)
         { 

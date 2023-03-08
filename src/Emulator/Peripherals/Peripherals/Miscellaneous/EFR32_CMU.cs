@@ -3,7 +3,7 @@
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
-// 
+//
 
 using System.Collections.Generic;
 using System.IO;
@@ -27,7 +27,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             base.Reset();
         }
 
-        public long Size => 0x100;
+        public long Size => 0x200;
 
         private void DefineRegisters()
         {
@@ -44,7 +44,13 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 .WithFlag(9, FieldMode.Write, name: "LFXODIS", writeCallback: (_, val) => { if(val) { lfxoens.Value = false; } })
                 .WithReservedBits(10, 22)
             ;
-            
+
+            Registers.LowFrequencyEClockSelect.Define32(this)
+                // This field has to be RW with memory, because SW is reading back written value
+                .WithEnumField<DoubleWordRegister, LowFrequencyClockSelectMode>(0, 3, name: "LFE")
+                .WithReservedBits(3, 29)
+            ;
+
             Registers.Status.Define32(this)
                 .WithFlag(0, out hfrcoens, FieldMode.Read, name: "HFRCOENS")
                 .WithFlag(1, FieldMode.Read, valueProviderCallback: _ => hfrcoens.Value, name: "HFRCORDY")
@@ -77,6 +83,51 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 .WithEnumField<DoubleWordRegister, ClockSource>(0, 3, FieldMode.Read, name: "SELECTED", valueProviderCallback: _ => highFrequencyClockSelect.Value)
                 .WithReservedBits(3, 29)
             ;
+
+            Registers.HighFrequencyBusClockEnable.Define32(this)
+                .WithTaggedFlag("CRYPTO0", 0)
+                .WithTaggedFlag("CRYPTO1", 1)
+                .WithTaggedFlag("LE", 2)
+                .WithTaggedFlag("GPIO", 3)
+                .WithTaggedFlag("PRS", 4)
+                .WithTaggedFlag("LDMA", 5)
+                .WithTaggedFlag("GPCRC", 6)
+                .WithReservedBits(7, 25)
+            ;
+
+            Registers.HighFrequencyRadioPeripheralClockEnable.Define32(this)
+                // Those fields have to be RW with memory, because SW is reading back written values
+                .WithFlag(0, name: "PROTIMER")
+                .WithFlag(1, name: "RFSENSE")
+                .WithFlag(2, name: "RAC")
+                .WithFlag(3, name: "FRC")
+                .WithFlag(4, name: "CRC")
+                .WithFlag(5, name: "SYNTH")
+                .WithFlag(6, name: "MODEM")
+                .WithFlag(7, name: "AGC")
+                .WithReservedBits(8, 24)
+            ;
+
+            Registers.RadioDeFeaturing.Define32(this, 0x3f0000)
+                .WithTag("SYNTHLODIVFREQCTRL", 0, 9)
+                .WithTaggedFlag("RACIFLILTENABLE", 9)
+                .WithTaggedFlag("RACAUXPLL", 10)
+                .WithTaggedFlag("MODEMDEC1", 11)
+                .WithTaggedFlag("MODEMANTDIVMODE", 12)
+                .WithTaggedFlag("RACIFPGAENPGA", 13)
+                .WithTag("RACPASLICE", 14, 7)
+                .WithTaggedFlag("RACSGPAEN", 21)
+                .WithTaggedFlag("RACPAEN", 22)
+                .WithTaggedFlag("RACPAEN0DBM", 23)
+                .WithTaggedFlag("FRCCONVMODE", 24)
+                .WithReservedBits(25, 1)
+                .WithTaggedFlag("FRCPAUSING", 26)
+                .WithTaggedFlag("MODEMDSSS", 27)
+                .WithTaggedFlag("MODEMMODFORMAT", 28)
+                .WithTaggedFlag("MODEMDUALSYNC", 29)
+                .WithReservedBits(30, 1)
+                .WithTaggedFlag("UNLOCKED", 31)
+            ;
         }
 
         private IFlagRegisterField hfrcoens;
@@ -90,64 +141,102 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
 
         private enum ClockSource
         {
-            HFRCO = 0x1,
-            HFXO = 0x2,
-            LFRCO = 0x3,
-            LFXO = 0x4,
-            HFRCODIV2 = 0x5,
-            CLKIN0 = 0x7,
+            HighFrequencyResistorCapacitorOscillator            = 0x1,
+            HighFrequencyCrystalOscillator                      = 0x2,
+            LowFrequencyResistorCapacitorOscillator             = 0x3,
+            LowFrequencyCrystalOscillator                       = 0x4,
+            HighFrequencyResistorCapacitorOscillatorDividedBy2  = 0x5,
+            ClockInput0                                         = 0x7,
+        }
+
+        private enum LowFrequencyClockSelectMode
+        {
+            Disabled                                            = 0x0,
+            LowFrequencyResistorCapacitorOscillator             = 0x1,
+            LowFrequencyCrystalOscillator                       = 0x2,
+            HighFrequencyClockLowEnergy                         = 0x3,
+            UltraLowFrequencyResistorCapacitorOscillator        = 0x4,
+            PrecisionLowFrequencyResistorCapacitorOscillator    = 0x5,
         }
 
         private enum Registers
         {
-            Control = 0x000, //RW CMU Control Register
-            HFRCOControl = 0x010, //RWH HFRCO Control Register
-            AUXHFRCOControl = 0x018, //RW AUXHFRCO Control Register
-            LFRCOControl = 0x020, //RW LFRCO Control Register
-            HFXOControl = 0x024, //RW HFXO Control Register
-            HFXOSTARTUPControl = 0x02C, //RW HFXO Startup Control
-            HFXOSteadyStateControl = 0x030, //RW HFXO Steady State Control
-            HFXOTimeoutControl = 0x034, //RW HFXO Timeout Control
-            LFXOControl = 0x038, //RW LFXO Control Register
-            CalibrationControl = 0x050, //RW Calibration Control Register
-            CalibartionCounter = 0x054, //RWH Calibration Counter Register
-            OscillatorEnableDisableCommand = 0x060, //W1 Oscillator Enable/Disable Command Register
-            Command = 0x064, //W1 Command Register
-            DebugTraceClockSelect = 0x070, //RW Debug Trace Clock Select
-            HighFrequencyClockSelectCommand = 0x074, //W1 High Frequency Clock Select Command Register
-            LowFrequencyAClockSelect = 0x080, //RW Low Frequency A Clock Select Register
-            LowFrequencyBClockSelect = 0x084, //RW Low Frequency B Clock Select Register
-            LowFrequencyEClockSelect = 0x088, //RW Low Frequency E Clock Select Register
-            Status = 0x090, //R Status Register
-            HighFrequencyClockStatus = 0x094, //R HFCLK Status Register
-            HFXOTrimStatus = 0x09C, //R HFXO Trim Status
-            InterruptFlag = 0x0A0, //R Interrupt Flag Register
-            InterruptFlagSet = 0x0A4, //W1 Interrupt Flag Set Register
-            InterruptFlagClear = 0x0A8, //(R)W1 Interrupt Flag Clear Register
-            InterruptEnable = 0x0AC, //RW Interrupt Enable Register
-            HighFrequencyBusClockEnable = 0x0B0, //RW High Frequency Bus Clock Enable Register 0
-            HighFrequencyPeripheralClockEnable = 0x0C0, //RW High Frequency Peripheral Clock Enable Register 0
-            HighFrequencyAlternateRadioPeripheralClockEnable = 0x0CC, //RW High Frequency Alternate Radio Peripheral Clock Enable Register 0
-            LowFrequencyAClockEnable = 0x0E0, //RW Low Frequency a Clock Enable Register 0 (Async Reg)
-            LowFrequencyBClockEnable = 0x0E8, //RW Low Frequency B Clock Enable Register 0 (Async Reg)
-            LowFrequencyEClockEnable = 0x0F0, //RW Low Frequency E Clock Enable Register 0 (Async Reg)
-            HighFrequencyClockPrescaler = 0x100, //RW High Frequency Clock Prescaler Register
-            HighFrequencyCoreClockPrescaler = 0x108, //RW High Frequency Core Clock Prescaler Register
-            HighFrequencyPeripheralClockPrescaler = 0x10C, //RW High Frequency Peripheral Clock Prescaler Register
-            HighFrequencyRadioPeripheralClockPrescaler = 0x110, //RW High Frequency Radio Peripheral Clock Prescaler Register
-            HighFrequencyExportClockPrescaler = 0x114, //RW High Frequency Export Clock Prescaler Register
-            LowFrequencyAPrescaler = 0x120, //RW Low Frequency a Prescaler Register 0 (Async Reg)
-            LowFrequencyBPrescaler = 0x128, //RW Low Frequency B Prescaler Register 0 (Async Reg)
-            LowFrequencyEPrescaler = 0x130, //RW Low Frequency E Prescaler Register 0 (Async Reg)
-            HighFrequencyAlternateRadioPeripheralClockPrescaler = 0x138, //RW High Frequency Alternate Radio Peripheral Clock Prescaler Register
-            SynchronizationBusy = 0x140, //R Synchronization Busy Register
-            Freeze = 0x144, //RW Freeze Register
-            PCNTControl = 0x150, //RWH PCNT Control Register
-            ADCControl = 0x15C, //RWH ADC Control Register
-            RoutingPinEnable = 0x170, //RW I/O Routing Pin Enable Register
-            RoutingLocation0 = 0x174, //RW I/O Routing Location Register
-            RoutingLocation1 = 0x178, //RW I/O Routing Location Register
-            ConfigurationLoc = 0x180, //RWH Configuration Lock Register
+            Control                                             = 0x000,
+            HFRCOControl                                        = 0x010,
+            HFRCOLDOControl                                     = 0x014,
+            AUXHFRCOControl                                     = 0x018,
+            AuxiliaryHFRCOLDOControl                            = 0x01C,
+            LFRCOControl                                        = 0x020,
+            HFXOControl                                         = 0x024,
+            HFXOSTARTUPControl                                  = 0x02C,
+            HFXOSteadyStateControl                              = 0x030,
+            HFXOTimeoutControl                                  = 0x034,
+            LFXOControl                                         = 0x038,
+            ULFRCOControl                                       = 0x03C,
+            DPLLControl                                         = 0x040,
+            DPLLControl1                                        = 0x044,
+            CalibrationControl                                  = 0x050,
+            CalibartionCounter                                  = 0x054,
+            OscillatorEnableDisableCommand                      = 0x060,
+            Command                                             = 0x064,
+            DebugTraceClockSelect                               = 0x070,
+            HighFrequencyClockSelectCommand                     = 0x074,
+            LowFrequencyAClockSelect                            = 0x080,
+            LowFrequencyBClockSelect                            = 0x084,
+            LowFrequencyEClockSelect                            = 0x088,
+            Status                                              = 0x090,
+            HighFrequencyClockStatus                            = 0x094,
+            HFXOTrimStatus                                      = 0x09C,
+            InterruptFlag                                       = 0x0A0,
+            InterruptFlagSet                                    = 0x0A4,
+            InterruptFlagClear                                  = 0x0A8,
+            InterruptEnable                                     = 0x0AC,
+            HighFrequencyBusClockEnable                         = 0x0B0,
+            HighFrequencyCoreClockEnable                        = 0x0B8,
+            HighFrequencyPeripheralClockEnable                  = 0x0C0,
+            HighFrequencyRadioPeripheralClockEnable             = 0x0C8,
+            HighFrequencyAlternateRadioPeripheralClockEnable    = 0x0CC,
+            HighFrequencyUndividedClockEnable                   = 0x0D0,
+            LowFrequencyAClockEnable                            = 0x0E0,
+            LowFrequencyBClockEnable                            = 0x0E8,
+            LowFrequencyEClockEnable                            = 0x0F0,
+            HighFrequencyClockPrescaler                         = 0x100,
+            HighFrequencyCoreClockPrescaler                     = 0x108,
+            HighFrequencyPeripheralClockPrescaler               = 0x10C,
+            HighFrequencyRadioPeripheralClockPrescaler          = 0x110,
+            HighFrequencyExportClockPrescaler                   = 0x114,
+            LowFrequencyAPrescaler                              = 0x120,
+            LowFrequencyBPrescaler                              = 0x128,
+            LowFrequencyEPrescaler                              = 0x130,
+            HighFrequencyAlternateRadioPeripheralClockPrescaler = 0x138,
+            SynchronizationBusy                                 = 0x140,
+            Freeze                                              = 0x144,
+            PCNTControl                                         = 0x150,
+            LVDSControl                                         = 0x158,
+            ADCControl                                          = 0x15C,
+            RoutingPinEnable                                    = 0x170,
+            RoutingLocation0                                    = 0x174,
+            RoutingLocation1                                    = 0x178,
+            ConfigurationLoc                                    = 0x180,
+            HFRCOSpreadSpectrum                                 = 0x184,
+            RadioDeFeaturing                                    = 0x188,
+            HighFrequencyBusClockLock                           = 0x190,
+            HighFrequencyCoreClockLock                          = 0x194,
+            HighFrequencyPeripheralClockLock                    = 0x198,
+            HighFrequencyRadioPeripheralClockLock               = 0x1A4,
+            AlternateRadioPeripheralClockLock                   = 0x1AC,
+            HighFrequencyUndividedClockLock                     = 0x1B0,
+            LowFrequencyAClockLock                              = 0x1B4,
+            LowFrequencyBClockLock                              = 0x1BC,
+            LowFrequencyEClockLock                              = 0x1C4,
+            PCNTClockLock                                       = 0x1CC,
+            Test                                                = 0x1D0,
+            HFRCOTestControl                                    = 0x1D4,
+            AUXHRCOTestControl                                  = 0x1D8,
+            LFRCOTestControl                                    = 0x1DC,
+            HFXOTestControl                                     = 0x1E0,
+            LFXOTestControl                                     = 0x1E4,
+            DPLLOffset                                          = 0x1FC,
         }
     }
 }

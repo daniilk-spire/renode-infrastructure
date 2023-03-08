@@ -51,6 +51,8 @@ namespace Antmicro.Renode.Peripherals.CPU
             this.machine = machine;
             this.bitness = bitness;
             isPaused = true;
+
+            singleStepSynchronizer = new Synchronizer();
         }
         
         public string[,] GetRegistersValues()
@@ -201,8 +203,6 @@ namespace Antmicro.Renode.Peripherals.CPU
 
         public bool DebuggerConnected { get; set; }
 
-        public virtual int CyclesPerInstruction { get; set; }
-        
         public override bool IsHalted
         {
             get
@@ -262,15 +262,43 @@ namespace Antmicro.Renode.Peripherals.CPU
             }
         }
         
+        public virtual ExecutionMode ExecutionMode
+        {
+            get
+            {
+                return executionMode;
+            }
+
+            set
+            {
+                lock(singleStepSynchronizer.Guard)
+                {
+                    if(executionMode == value)
+                    {
+                        return;
+                    }
+
+                    executionMode = value;
+
+                    singleStepSynchronizer.Enabled = IsSingleStepMode;
+                    UpdateHaltedState();
+                }
+            }
+        }
+        
         public event Action<HaltArguments> Halted;
 
         public abstract ulong ExecutedInstructions { get; }
-        public abstract ExecutionMode ExecutionMode  { get; set; }
         public abstract RegisterValue PC { get; set; }
 
         protected virtual void InnerPause(bool onCpuThread, bool checkPauseGuard)
         {
-            // do nothing by default
+            RequestPause();
+
+            if(onCpuThread)
+            {
+                TimeHandle.Interrupt();
+            }
         }
         
         protected virtual void Pause(HaltArguments haltArgs, bool checkPauseGuard)
@@ -326,12 +354,17 @@ namespace Antmicro.Renode.Peripherals.CPU
         {
             Pause(new HaltArguments(HaltReason.Pause, Id), checkPauseGuard: true);
         }
-        
+
         protected virtual void RequestPause()
         {
-            // by default do nothing
+            lock(pauseLock)
+            {
+                isPaused = true;
+                this.Trace("Requesting pause");
+                sleeper.Interrupt();
+            }
         }
-        
+
         protected bool ChangeExecutionModeToSingleStep(bool? blocking = null)
         {
             var mode = ExecutionMode;
@@ -658,45 +691,52 @@ restart:
             }
         }
         
-        protected virtual void UpdateHaltedState(bool ignoreExecutionMode = false)
+        protected virtual bool UpdateHaltedState(bool ignoreExecutionMode = false)
         {
-            // empty by default
+            var shouldBeHalted = (isHaltedRequested || (executionMode == ExecutionMode.SingleStepNonBlocking && !ignoreExecutionMode));
+
+            if(shouldBeHalted == currentHaltedState)
+            {
+                return false;
+            }
+
+            lock(pauseLock)
+            {
+                this.Trace();
+                currentHaltedState = shouldBeHalted;
+                if(TimeHandle != null)
+                {
+                    this.Trace();
+                    TimeHandle.DeferredEnabled = !shouldBeHalted;
+                }
+            }
+
+            return true;
         }
-        
+
         protected abstract ExecutionResult ExecuteInstructions(ulong numberOfInstructionsToExecute, out ulong numberOfExecutedInstructions);
-        
+
         protected bool InDebugMode => DebuggerConnected && ShouldEnterDebugMode && IsSingleStepMode;
         protected bool IsSingleStepMode => executionMode == ExecutionMode.SingleStepNonBlocking || executionMode == ExecutionMode.SingleStepBlocking;
-        
+
         protected bool shouldEnterDebugMode;
         protected bool neverWaitForInterrupt;
         protected bool dispatcherRestartRequested;
         protected bool isHaltedRequested;
         protected bool currentHaltedState;
-        
+
         [Transient]
         protected ExecutionMode executionMode;
 
         [Transient]
         protected bool disposing;
 
-        [Transient]
-        protected Synchronizer singleStepSynchronizer;
+        [Constructor]
+        protected readonly Synchronizer singleStepSynchronizer;
         
         protected readonly Sleeper sleeper = new Sleeper();
         protected readonly CpuBitness bitness;
         protected readonly Machine machine;
-        
-        protected enum ExecutionResult : ulong
-        {
-            Ok = 0,
-            Interrupted = 1,
-            WaitingForInterrupt = 2,
-            StoppedAtBreakpoint = 3,
-            StoppedAtWatchpoint = 4,
-            ExternalMmuFault = 5,
-            Aborted = ulong.MaxValue
-        }
         
         protected enum CpuResult
         {

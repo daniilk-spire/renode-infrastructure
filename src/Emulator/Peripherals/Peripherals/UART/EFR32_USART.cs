@@ -1,114 +1,81 @@
 //
-// Copyright (c) 2010-2018 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
 //
-using Antmicro.Renode.Core;
-using Antmicro.Renode.Logging;
-using Antmicro.Renode.Peripherals.Bus;
 using System.Collections.Generic;
+using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure;
-using Antmicro.Renode.Exceptions;
-using Antmicro.Renode.Peripherals.SPI;
 using Antmicro.Renode.Core.Structure.Registers;
-using Antmicro.Renode.Utilities;
+using Antmicro.Renode.Peripherals.Bus;
+using Antmicro.Renode.Peripherals.UART.Silabs;
 
 namespace Antmicro.Renode.Peripherals.UART
 {
-    public class EFR32_USART : UARTBase, IDoubleWordPeripheral, IPeripheralContainer<ISPIPeripheral, NullRegistrationPoint>
+    [AllowedTranslations(AllowedTranslation.ByteToDoubleWord | AllowedTranslation.DoubleWordToByte)]
+    public class EFR32_USART : EFR32_GenericUSART, IDoubleWordPeripheral
     {
-        public EFR32_USART(Machine machine, uint clockFrequency = 19000000) : base(machine)
+        public EFR32_USART(Machine machine, uint clockFrequency = 19000000) : base(machine, clockFrequency)
         {
-            TransmitIRQ = new GPIO();
-            ReceiveIRQ = new GPIO();
-
-            interruptsManager = new InterruptManager<Interrupt>(this);
-
             var registersMap = new Dictionary<long, DoubleWordRegister>
             {
-                {(long)Registers.Control, new DoubleWordRegister(this)
-                    .WithEnumField(0, 1, out operationModeField, name: "SYNC")
-                    .WithEnumField(5, 2, out oversamplingField, name: "OVS")},
-                {(long)Registers.FrameFormat, new DoubleWordRegister(this, 0x1005)
-                    .WithEnumField(8, 2, out parityBitModeField, name: "PARITY")
-                    .WithEnumField(12, 2, out stopBitsModeField, name: "STOPBITS")},
-                {(long)Registers.Command, new DoubleWordRegister(this)
-                    .WithFlag(11, FieldMode.Set, writeCallback: (_, newValue) => { if(newValue){ ClearBuffer(); }}, name: "CLEARRX")
-                    .WithFlag(3, FieldMode.Set, writeCallback: (_, newValue) => { if(newValue) transmitterEnableFlag.Value = false; }, name: "TXDIS")
-                    .WithFlag(2, FieldMode.Set, writeCallback: (_, newValue) =>
-                    {
-                        if(newValue)
-                        {
-                            transmitterEnableFlag.Value = true;
-                            interruptsManager.SetInterrupt(Interrupt.TransmitBufferLevel);
-                        }
-                    }, name: "TXEN")
-                    .WithFlag(1, FieldMode.Set, writeCallback: (_, newValue) => { if(newValue) receiverEnableFlag.Value = false; }, name: "RXDIS")
-                    .WithFlag(0, FieldMode.Set, writeCallback: (_, newValue) => { if(newValue) receiverEnableFlag.Value = true; }, name: "RXEN")},
-                {(long)Registers.Status, new DoubleWordRegister(this, 0x2040)
-                    .WithFlag(0, out receiverEnableFlag, FieldMode.Read, name: "RXENS")
-                    .WithFlag(1, out transmitterEnableFlag, FieldMode.Read, name: "TXENS")
-                    .WithFlag(5, out transferCompleteFlag, FieldMode.Read, name: "TXC")
-                    .WithFlag(7, out receiveDataValidFlag, FieldMode.Read, name: "RXDATAV")},
-                {(long)Registers.ClockControl, new DoubleWordRegister(this)
-                    .WithValueField(3, 20, out fractionalClockDividerField, name: "DIV")},
-                {(long)Registers.RxBufferData, new DoubleWordRegister(this)
-                    .WithValueField(0, 8, FieldMode.Read, name: "RXDATA", valueProviderCallback: (_) => ReadBuffer())},
-                {(long)Registers.TxBufferData, new DoubleWordRegister(this)
-                    .WithValueField(0, 8, FieldMode.Write, writeCallback: (_, v) => HandleTxBufferData((byte)v))},
+                {(long)Registers.Control, GenerateControlRegister()},
+                {(long)Registers.FrameFormat, GenerateFrameFormatRegister()},
+                {(long)Registers.TriggerControl, GenerateTriggerControlRegister()},
+                {(long)Registers.Command, GenerateCommandRegister()},
+                {(long)Registers.Status, GenerateStatusRegister()},
+                {(long)Registers.ClockControl, GenerateClockControlRegister()},
+                {(long)Registers.RxBufferDataExtended, GenerateRxBufferDataExtendedRegister()},
+                {(long)Registers.RxBufferData, GenerateRxBufferDataRegister()},
+                {(long)Registers.RxBufferDoubleDataExtended, GenerateRxBufferDoubleDataExtendedRegister()},
+                {(long)Registers.RxBufferDoubleData, GenerateRxBufferDoubleDataRegister()},
+                {(long)Registers.RxBufferDataExtendedPeek, GenerateRxBufferDataExtendedPeekRegister()},
+                {(long)Registers.RxBufferDoubleDataExtendedPeek, GenerateRxBufferDoubleDataExtendedPeekRegister()},
+                {(long)Registers.TxBufferDataExtended, GenerateTxBufferDataExtendedRegister()},
+                {(long)Registers.TxBufferData, GenerateTxBufferDataRegister()},
+                {(long)Registers.TxBufferDoubleDataExtended, GenerateTxBufferDoubleDataExtendedRegister()},
+                {(long)Registers.TxBufferDoubleData, GenerateTxBufferDoubleDataRegister()},
+                {(long)Registers.InterruptFlag, GenerateInterruptFlagRegister()},
+                {(long)Registers.InterruptFlagSet, GenerateInterruptFlagSetRegister()},
+                {(long)Registers.InterruptFlagClear, GenerateInterruptFlagClearRegister()},
+                {(long)Registers.InterruptEnable, GenerateInterruptEnableRegister()},
+                {(long)Registers.IrDAControl, GenerateIrDAControlRegister()},
+                {(long)Registers.USARTInput, GenerateUSARTInputRegister()},
+                {(long)Registers.I2SControl, GenerateI2SControlRegister()},
+                {(long)Registers.Timing, GenerateTimingRegister()},
+                {(long)Registers.ControlExtended, GenerateControlExtendedRegister()},
+                {(long)Registers.TimeCompare0, GenerateTimeCompare0Register()},
+                {(long)Registers.TimeCompare1, GenerateTimeCompare1Register()},
+                {(long)Registers.TimeCompare2, GenerateTimeCompare2Register()},
+                {(long)Registers.IORoutingPinEnable, new DoubleWordRegister(this)
+                    .WithTaggedFlag("RXPEN", 0)
+                    .WithTaggedFlag("TXPEN", 1)
+                    .WithTaggedFlag("CSPEN", 2)
+                    .WithTaggedFlag("CLKPEN", 3)
+                    .WithTaggedFlag("CTSPEN", 4)
+                    .WithTaggedFlag("RTSPEN", 5)
+                    .WithReservedBits(6, 26)
+                },
+                {(long)Registers.IORoutingLocation0, new DoubleWordRegister(this)
+                    .WithTag("RXLOC", 0, 6)
+                    .WithReservedBits(6, 2)
+                    .WithTag("TXLOC", 8, 6)
+                    .WithReservedBits(14, 2)
+                    .WithTag("CSLOC", 16, 6)
+                    .WithReservedBits(22, 2)
+                    .WithTag("CLKLOC", 24, 6)
+                    .WithReservedBits(30, 2)
+                },
+                {(long)Registers.IORoutingLocation1, new DoubleWordRegister(this)
+                    .WithTag("CTSLOC", 0, 6)
+                    .WithReservedBits(6, 2)
+                    .WithTag("RTSLOC", 8, 6)
+                    .WithReservedBits(14, 18)
+                },
+                {(long)Registers.Test, GenerateTestRegister()},
             };
-            registersMap.Add((long)Registers.InterruptFlag, interruptsManager.GetMaskedInterruptFlagRegister<DoubleWordRegister>());
-            registersMap.Add((long)Registers.InterruptEnable, interruptsManager.GetInterruptEnableRegister<DoubleWordRegister>());
-            registersMap.Add((long)Registers.InterruptFlagSet, interruptsManager.GetInterruptSetRegister<DoubleWordRegister>());
-            registersMap.Add((long)Registers.InterruptFlagClear, interruptsManager.GetInterruptClearRegister<DoubleWordRegister>());
-
             registers = new DoubleWordRegisterCollection(this, registersMap);
-
-            uartClockFrequency = clockFrequency;
-        }
-
-        public override void Reset()
-        {
-            base.Reset();
-            interruptsManager.Reset();
-            spiSlaveDevice = null;
-        }
-
-        public void Register(ISPIPeripheral peripheral, NullRegistrationPoint registrationPoint)
-        {
-            if(spiSlaveDevice != null)
-            {
-                throw new RegistrationException("Cannot register more than one peripheral.");
-            }
-            Machine.RegisterAsAChildOf(this, peripheral, registrationPoint);
-            spiSlaveDevice = peripheral;
-        }
-
-        public void Unregister(ISPIPeripheral peripheral)
-        {
-            if(peripheral != spiSlaveDevice)
-            {
-                throw new RegistrationException("Trying to unregister not registered device.");
-            }
-
-            Machine.UnregisterAsAChildOf(this, peripheral);
-            spiSlaveDevice = null;
-        }
-
-        public IEnumerable<NullRegistrationPoint> GetRegistrationPoints(ISPIPeripheral peripheral)
-        {
-            if(peripheral != spiSlaveDevice)
-            {
-                throw new RegistrationException("Trying to obtain a registration point for a not registered device.");
-            }
-
-            return new[] { NullRegistrationPoint.Instance };
-        }
-
-        public void WriteDoubleWord(long address, uint value)
-        {
-            registers.Write(address, value);
         }
 
         public uint ReadDoubleWord(long offset)
@@ -116,183 +83,14 @@ namespace Antmicro.Renode.Peripherals.UART
             return registers.Read(offset);
         }
 
-        public IEnumerable<IRegistered<ISPIPeripheral, NullRegistrationPoint>> Children
+        public void WriteDoubleWord(long address, uint value)
         {
-            get
-            {
-                return new[] { Registered.Create(spiSlaveDevice, NullRegistrationPoint.Instance) };
-            }
+            registers.Write(address, value);
         }
 
-        [IrqProvider("transmit irq", 0)]
-        public GPIO TransmitIRQ { get; private set; }
-
-        [IrqProvider("receive irq", 1)]
-        public GPIO ReceiveIRQ { get; private set; }
-
-        public override Parity ParityBit { get { return parityBitModeField.Value; } }
-
-        public override Bits StopBits { get { return stopBitsModeField.Value; } }
-
-        public override uint BaudRate
+        public override void Reset()
         {
-            get
-            {
-                //This calculation, according to the documentation, could be written as:
-                //return uartClockFrequency / (multiplier * (1 + (fractionalClockDividerField.Value << 3) / 256));
-                //But the result differs much from the one calculated by the driver, most probably due to
-                //invalid integer division.
-                //This code mimics the one in emlib driver.
-                var oversample = 1u;
-                var factor = 0u;
-                switch(oversamplingField.Value)
-                {
-                case OversamplingMode.Times16:
-                    oversample = 1;
-                    factor = 256 / 16;
-                    break;
-                case OversamplingMode.Times8:
-                    oversample = 1;
-                    factor = 256 / 8;
-                    break;
-                case OversamplingMode.Times6:
-                    oversample = 3;
-                    factor = 256 / 2;
-                    break;
-                case OversamplingMode.Times4:
-                    oversample = 1;
-                    factor = 256 / 4;
-                    break;
-                }
-                var divisor = oversample * (256 + (fractionalClockDividerField.Value << 3));
-                var quotient = uartClockFrequency / divisor;
-                var remainder = uartClockFrequency % divisor;
-                return (factor * quotient) + (factor * remainder) / divisor;
-            }
-        }
-
-        public override void WriteChar(byte value)
-        {
-            if(!receiverEnableFlag.Value)
-            {
-                this.Log(LogLevel.Info, "Data received when the receiver is disabled: 0x{0:X}", value);
-                return;
-            }
-            base.WriteChar(value);
-        }
-
-        protected override void CharWritten()
-        {
-            interruptsManager.SetInterrupt(Interrupt.ReceiveDataValid);
-            receiveDataValidFlag.Value = true;
-        }
-
-        protected override void QueueEmptied()
-        {
-            interruptsManager.ClearInterrupt(Interrupt.ReceiveDataValid);
-            receiveDataValidFlag.Value = false;
-        }
-
-        private void HandleTxBufferData(byte data)
-        {
-            if(!transmitterEnableFlag.Value)
-            {
-                this.Log(LogLevel.Warning, "Trying to send data, but the transmitter is disabled: 0x{0:X}", data);
-                return;
-            }
-
-            if(operationModeField.Value == OperationMode.Synchronous)
-            {
-                if(spiSlaveDevice == null)
-                {
-                    this.Log(LogLevel.Warning, "Writing data in synchronous mode, but no device is currently connected.");
-                    return;
-                }
-                transferCompleteFlag.Value = false;
-                var result = spiSlaveDevice.Transmit(data);
-                transferCompleteFlag.Value = true;
-                WriteChar(result);
-            }
-            else
-            {
-                transferCompleteFlag.Value = false;
-                interruptsManager.SetInterrupt(Interrupt.TransmitBufferLevel);
-                TransmitCharacter(data);
-                transferCompleteFlag.Value = true;
-                interruptsManager.SetInterrupt(Interrupt.TransmitComplete);
-            }
-        }
-
-        private byte ReadBuffer()
-        {
-            byte character;
-            return TryGetCharacter(out character) ? character : (byte)0;
-        }
-
-        private readonly DoubleWordRegisterCollection registers;
-        private readonly InterruptManager<Interrupt> interruptsManager;
-        private readonly IEnumRegisterField<OversamplingMode> oversamplingField;
-        private readonly IEnumRegisterField<OperationMode> operationModeField;
-        private readonly IEnumRegisterField<Parity> parityBitModeField;
-        private readonly IEnumRegisterField<Bits> stopBitsModeField;
-        private readonly IValueRegisterField fractionalClockDividerField;
-        private readonly IFlagRegisterField transferCompleteFlag;
-        private readonly IFlagRegisterField receiveDataValidFlag;
-        private readonly IFlagRegisterField receiverEnableFlag;
-        private readonly IFlagRegisterField transmitterEnableFlag;
-        private readonly uint uartClockFrequency;
-        private ISPIPeripheral spiSlaveDevice;
-
-        private enum OperationMode
-        {
-            Asynchronous,
-            Synchronous
-        }
-
-        private enum OversamplingMode
-        {
-            Times16,
-            Times8,
-            Times6,
-            Times4
-        }
-
-        private enum Interrupt
-        {
-            [Subvector(0)]
-            TransmitComplete,
-            [Subvector(0), NotSettable]
-            TransmitBufferLevel,
-            [Subvector(1), NotSettable]
-            ReceiveDataValid,
-            [Subvector(1)]
-            ReceiveBufferFull,
-            [Subvector(1)]
-            ReceiveOverflow,
-            [Subvector(1)]
-            ReceiveUnderflow,
-            [Subvector(0)]
-            TransmitOverflow,
-            [Subvector(0)]
-            TransmitUnderflow,
-            [Subvector(1)]
-            ParityError,
-            [Subvector(1)]
-            FramingError,
-            [Subvector(1)]
-            MultiProcessorAddressFrame,
-            [Subvector(1)]
-            SlaveSelectInMasterMode,
-            [Subvector(0)]
-            CollisionCheckFail,
-            [Subvector(0)]
-            TransmitIdle,
-            [Subvector(1)]
-            TimerComparator0,
-            [Subvector(1)]
-            TimerComparator1,
-            [Subvector(1)]
-            TimerComparator2
+            base.Reset();
         }
 
         private enum Registers
@@ -328,6 +126,9 @@ namespace Antmicro.Renode.Peripherals.UART
             IORoutingPinEnable = 0x74,
             IORoutingLocation0 = 0x78,
             IORoutingLocation1 = 0x7C,
+            Test = 0x80,
         }
+
+        private readonly DoubleWordRegisterCollection registers;
     }
 }

@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2018 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -12,14 +12,15 @@ using Antmicro.Renode.Core.Structure;
 using System.Collections.Generic;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure.Registers;
+using Antmicro.Renode.Utilities.Collections;
 
 namespace Antmicro.Renode.Peripherals.SPI
 {
     public sealed class STM32SPI : NullRegistrationPointPeripheralContainer<ISPIPeripheral>, IWordPeripheral, IDoubleWordPeripheral, IBytePeripheral, IKnownSize
     {
-        public STM32SPI(Machine machine) : base(machine)
+        public STM32SPI(Machine machine, int bufferCapacity = DefaultBufferCapacity) : base(machine)
         {
-            receiveBuffer = new Queue<byte>();
+            receiveBuffer = new CircularBuffer<byte>(bufferCapacity);
             IRQ = new GPIO();
             SetupRegisters();
             Reset();
@@ -110,12 +111,14 @@ namespace Antmicro.Renode.Peripherals.SPI
             IRQ.Unset();
             lock(receiveBuffer)
             {
-                if(receiveBuffer.Count > 0)
+                if(receiveBuffer.TryDequeue(out var value))
                 {
-                    var value = receiveBuffer.Dequeue();
-                    return value; // TODO: verify if Update should be called
+                    Update();
+                    return value;
                 }
-                this.Log(LogLevel.Warning, "Trying to read data register while no data has been received.");
+                // We don't warn when the data register is read while it's empty because the HAL
+                // (for example L0, F4) does this intentionally.
+                // See https://github.com/STMicroelectronics/STM32CubeL0/blob/bec4e499a74de98ab60784bf2ef1912bee9c1a22/Drivers/STM32L0xx_HAL_Driver/Src/stm32l0xx_hal_spi.c#L1368-L1372
                 return 0;
             }
         }
@@ -132,16 +135,20 @@ namespace Antmicro.Renode.Peripherals.SPI
                     receiveBuffer.Enqueue(0x0);
                     return;
                 }
-                receiveBuffer.Enqueue(peripheral.Transmit((byte)value)); // currently byte mode is the only one we support
-                this.NoisyLog("Transmitted 0x{0:X}, received 0x{1:X}.", value, receiveBuffer.Peek());
+                var response = peripheral.Transmit((byte)value); // currently byte mode is the only one we support
+                receiveBuffer.Enqueue(response);
+                this.NoisyLog("Transmitted 0x{0:X}, received 0x{1:X}.", value, response);
             }
             Update();
         }
 
         private void Update()
         {
-            // TODO: verify this condition
-            IRQ.Set(txBufferEmptyInterruptEnable.Value || rxBufferNotEmptyInterruptEnable.Value || txDmaEnable.Value || rxDmaEnable.Value);
+            var rxBufferNotEmpty = receiveBuffer.Count != 0;
+            var rxBufferNotEmptyInterruptFlag = rxBufferNotEmpty && rxBufferNotEmptyInterruptEnable.Value;
+
+            // TODO: verify the DMA conditions
+            IRQ.Set(txBufferEmptyInterruptEnable.Value || rxBufferNotEmptyInterruptFlag || txDmaEnable.Value || rxDmaEnable.Value);
         }
 
         private void SetupRegisters()
@@ -178,7 +185,9 @@ namespace Antmicro.Renode.Peripherals.SPI
         private DoubleWordRegisterCollection registers;
         private IFlagRegisterField txBufferEmptyInterruptEnable, rxBufferNotEmptyInterruptEnable, txDmaEnable, rxDmaEnable;
 
-        private readonly Queue<byte> receiveBuffer;
+        private readonly CircularBuffer<byte> receiveBuffer;
+
+        private const int DefaultBufferCapacity = 4;
 
         private enum Registers
         {

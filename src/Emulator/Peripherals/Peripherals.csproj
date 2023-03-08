@@ -60,6 +60,7 @@
     <Compile Include="Peripherals\SPI\MPFS_QSPI.cs" />
     <Compile Include="Peripherals\SPI\CC2538_SSI.cs" />
     <Compile Include="Peripherals\SPI\Micron_MT25Q.cs" />
+    <Compile Include="Peripherals\SPI\Cypress_S25H.cs" />
     <Compile Include="Peripherals\MTD\CFIFlash.cs" />
     <Compile Include="Peripherals\UART\NS16550.cs" />
     <Compile Include="Peripherals\UART\AxiUartLite.cs" />
@@ -108,7 +109,7 @@
     <Compile Include="Peripherals\Timers\STM32_Timer.cs" />
     <Compile Include="Peripherals\Timers\SP804.cs" />
     <Compile Include="Peripherals\Timers\EOSS3_SimplePeriodicTimer.cs" />
-    <Compile Include="Peripherals\Timers\CadenceTTC.cs" />
+    <Compile Include="Peripherals\Timers\Cadence_TTC.cs" />
     <Compile Include="Peripherals\UART\STM32_UART.cs" />
     <Compile Include="Peripherals\UART\STM32W_UART.cs" />
     <Compile Include="Peripherals\UART\EFM32_UART.cs" />
@@ -145,7 +146,7 @@
     <Compile Include="Peripherals\Video\PL110.cs" />
     <Compile Include="Peripherals\Video\TegraDisplay.cs" />
     <Compile Include="Peripherals\Network\SMC91X.cs" />
-    <Compile Include="Peripherals\I2C\XIIC.cs" />
+    <Compile Include="Peripherals\I2C\Cadence_I2C.cs" />
     <Compile Include="Peripherals\I2C\VybridI2C.cs" />
     <Compile Include="Peripherals\I2C\OpenCoresI2C.cs" />
     <Compile Include="Peripherals\Wireless\EmberRadio.cs" />
@@ -175,6 +176,7 @@
     <Compile Include="Peripherals\Miscellaneous\Button.cs" />
     <Compile Include="Peripherals\Network\SynopsysEthernetMAC.cs" />
     <Compile Include="Peripherals\SPI\XilinxQSPI.cs" />
+    <Compile Include="Peripherals\SPI\Cadence_xSPI.cs" />
     <Compile Include="Peripherals\SPI\HiFive_SPI.cs" />
     <Compile Include="Peripherals\IRQControllers\MSCM.cs" />
     <Compile Include="Peripherals\Miscellaneous\SEMA4.cs" />
@@ -214,7 +216,8 @@
       <DependentUpon>BitBanding.tt</DependentUpon>
     </Compile>
     <Compile Include="Peripherals\USBDeprecated\UsbHub.cs" />
-    <Compile Include="Peripherals\UART\CadenceUart.cs" />
+    <Compile Include="Peripherals\Helpers\CadenceInterruptFlag.cs" />
+    <Compile Include="Peripherals\UART\Cadence_UART.cs" />
     <Compile Include="Peripherals\UART\Atmel91DebugUnit.cs" />
     <Compile Include="Peripherals\UART\ImxUart.cs" />
     <Compile Include="Peripherals\Timers\Atmel91SystemTimer.cs" />
@@ -381,6 +384,7 @@
     <Compile Include="Peripherals\Sensors\ArduCAMMini2MPPlus.cs" />
     <Compile Include="Peripherals\Sensors\OV2640.cs" />
     <Compile Include="Peripherals\Sensors\LIS2DS12.cs" />
+    <Compile Include="Peripherals\Sensors\LIS2DW12.cs" />
     <Compile Include="Peripherals\Sensors\LSM303DLHC_Accelerometer.cs" />
     <Compile Include="Peripherals\Sensors\LSM303DLHC_Gyroscope.cs" />
     <Compile Include="Peripherals\Timers\PULP_Timer.cs" />
@@ -398,12 +402,13 @@
     <Compile Include="Peripherals\Sound\EOSS3_Voice.cs" />
     <Compile Include="Peripherals\Network\LiteX_Ethernet_CSR32.cs" />
     <Compile Include="Peripherals\Timers\LiteX_Timer_CSR32.cs" />
-    <Compile Include="Peripherals\Timers\STM32F4_IndependentWatchdog.cs" />
+    <Compile Include="Peripherals\Timers\STM32_IndependentWatchdog.cs" />
     <Compile Include="Peripherals\Miscellaneous\OpenTitan_VerilatorSwTestStatus.cs" />
     <Compile Include="Peripherals\Miscellaneous\OpenTitan_PowerManager.cs" />
     <Compile Include="Peripherals\Miscellaneous\OpenTitan_HMAC.cs" />
     <Compile Include="Peripherals\Miscellaneous\OpenTitan_AES.cs" />
     <Compile Include="Peripherals\Miscellaneous\OpenTitan_KeyManager.cs" />
+    <Compile Include="Peripherals\Miscellaneous\OpenTitan_BigNumberAccelerator.cs" />
     <Compile Include="Peripherals\Miscellaneous\OpenTitan_ResetManager.cs" />
     <Compile Include="Peripherals\Miscellaneous\OpenTitan_LifeCycleState.cs" />
     <Compile Include="Peripherals\Miscellaneous\OpenTitan_OneTimeProgrammableMemoryController.cs" />
@@ -411,10 +416,13 @@
     <Compile Include="Peripherals\Miscellaneous\OpenTitan_CSRNG.cs" />
     <Compile Include="Peripherals\Miscellaneous\OpenTitan_AlertHandler.cs" />
     <Compile Include="Peripherals\Miscellaneous\OpenTitan_MultiBitBool.cs" />
+    <Compile Include="Peripherals\Miscellaneous\OpenTitan_EntropySource.cs" />
+    <Compile Include="Peripherals\Miscellaneous\OpenTitan_EntropyDistributionNetwork.cs" />
     <Compile Include="Peripherals\I2C\OpenTitan_I2C.cs" />
     <Compile Include="Peripherals\GPIOPort\IMXRT_GPIO.cs" />
     <Compile Include="Peripherals\UART\OpenTitan_UART.cs" />
     <Compile Include="Peripherals\Timers\OpenTitan_Timer.cs" />
+    <Compile Include="Peripherals\Timers\OpenTitan_AonTimer.cs" />
     <Compile Include="Peripherals\MTD\OpenTitan_FlashController.cs" />
     <Compile Include="Peripherals\SPI\IMXRT_FlexSPI.cs" />
     <Compile Include="Peripherals\SPI\IMXRT_LPSPI.cs" />
@@ -426,6 +434,7 @@
     <Compile Include="Peripherals\Storage\VirtIOBlockDevice.cs" />
     <Compile Include="Peripherals\Analog\ADCChannel.cs" />
     <Compile Include="Peripherals\MemoryControllers\OpenTitan_ROMController.cs" />
+    <Compile Include="Peripherals\MemoryControllers\OpenTitan_SRAMController.cs" />
     <Compile Include="Peripherals\CPU\ExecutionTracer\ExecutionTracer.cs" />
     <Compile Include="Peripherals\CPU\ExecutionTracer\TraceWriter.cs" />
     <Compile Include="Peripherals\CPU\ExecutionTracer\TraceFormat.cs" />
@@ -448,8 +457,12 @@
     <Compile Include="Peripherals\Miscellaneous\Crypto\RSAServiceProvider.cs" />
     <Compile Include="Peripherals\Miscellaneous\Crypto\AESServiceProvider.cs" />
     <Compile Include="Peripherals\Miscellaneous\Crypto\MessageAuthenticationServiceProvider.cs" />
+    <Compile Include="Peripherals\Miscellaneous\Crypto\DSAServiceProvider.cs" />
+    <Compile Include="Peripherals\Miscellaneous\Crypto\AthenaX5200_BigIntegerHelper.cs" />
     <Compile Include="Peripherals\UART\PL011.cs" />
+    <Compile Include="Peripherals\Miscellaneous\WindowIOMMU.cs" />
     <Compile Include="Peripherals\Miscellaneous\ExternalWindowMMU.cs" />
+    <Compile Include="Peripherals\Mocks\SimpleDMA.cs" />
     <Compile Include="Peripherals\Video\MusteinGenericGPU.cs" />
     <Compile Include="Peripherals\UART\SAMD5_UART.cs" />
     <Compile Include="Peripherals\Miscellaneous\LiteX_MMCM_CSR32.cs" />
@@ -465,6 +478,7 @@
     <Compile Include="Peripherals\GPIOPort\MAX32650_GPIO.cs" />
     <Compile Include="Peripherals\Analog\MAX32650_ADC.cs" />
     <Compile Include="Peripherals\Mocks\HPSHostController.cs" />
+    <Compile Include="Peripherals\Mocks\I2CHost.cs" />
     <Compile Include="Peripherals\Miscellaneous\MAX32650_TPU.cs" />
     <Compile Include="Peripherals\SPI\MAX32650_SPI.cs" />
     <Compile Include="Peripherals\Miscellaneous\BitAccess.cs" />
@@ -481,8 +495,36 @@
     <Compile Include="Peripherals\Miscellaneous\STM32L0_RCC.cs" />
     <Compile Include="Peripherals\Sensors\LSM6DSO_IMU.cs" />
     <Compile Include="Peripherals\SPI\OpenTitan_SpiHost.cs" />
+    <Compile Include="Peripherals\SPI\Cadence_SPI.cs" />
     <Compile Include="Peripherals\Timers\IMX_GPTimer.cs" />
     <Compile Include="Peripherals\Sensors\MAX86171.cs" />
+    <Compile Include="Peripherals\Sensors\TMP103.cs" />
+    <Compile Include="Peripherals\I2C\MAX32650_I2C.cs" />
+    <Compile Include="Peripherals\Sensors\MAX30208.cs" />
+    <Compile Include="Peripherals\Miscellaneous\STM32L0_PWR.cs" />
+    <Compile Include="Peripherals\Sensors\AS6221.cs" />
+    <Compile Include="Peripherals\Sensors\MAX77818.cs" />
+    <Compile Include="Peripherals\I2C\LC709205F.cs" />
+    <Compile Include="Peripherals\CRC\STM32F0_CRC.cs" />
+    <Compile Include="Peripherals\MTD\STM32L0_FlashController.cs" />
+    <Compile Include="Peripherals\MTD\STM32_FlashController.cs" />
+    <Compile Include="Peripherals\MTD\STM32H7_FlashController.cs" />
+    <Compile Include="Peripherals\Miscellaneous\NRF52840_EGU.cs" />
+    <Compile Include="Peripherals\Timers\AmbiqApollo4_Timer.cs" />
+    <Compile Include="Peripherals\Miscellaneous\STM32H7_RCC.cs" />
+    <Compile Include="Peripherals\Timers\STM32L0_LpTimer.cs" />
+    <Compile Include="Peripherals\Miscellaneous\OpenTitan_SystemResetControl.cs" />
+    <Compile Include="Peripherals\DMA\EFR32MG12_LDMA.cs" />
+    <Compile Include="Peripherals\Mocks\DummyI2CSlave.cs" />
+    <Compile Include="Peripherals\Timers\RV8803_RTC.cs" />
+    <Compile Include="Peripherals\Miscellaneous\OpenTitan_ScrambledMemory.cs" />
+    <Compile Include="Peripherals\Miscellaneous\OpenTitan_ClockManager.cs" />
+    <Compile Include="Peripherals\SPI\GenericSpiFlash.cs" />
+    <Compile Include="Peripherals\SPI\Macronix_MX25R.cs" />
+    <Compile Include="Peripherals\Network\Quectel_BC660K.cs" />
+    <Compile Include="Peripherals\UART\SiLabs\EFR32_GenericUSART.cs" />
+    <Compile Include="Peripherals\UART\EFR32xG22_USART.cs" />
+    <Compile Include="Peripherals\SPI\SPIMultiplexer.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <ProjectExtensions>

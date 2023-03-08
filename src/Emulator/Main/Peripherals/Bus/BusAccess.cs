@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2018 Antmicro
+// Copyright (c) 2010-2022 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -15,7 +15,9 @@ namespace Antmicro.Renode.Peripherals.Bus
     {
         static BusAccess()
         {
-            Delegates = new [] { 
+            Delegates = new []
+            {
+                typeof(QuadWordReadMethod), typeof(QuadWordWriteMethod),
                 typeof(DoubleWordReadMethod), typeof(DoubleWordWriteMethod),
                 typeof(WordReadMethod), typeof(WordWriteMethod),
                 typeof(ByteReadMethod), typeof(ByteWriteMethod)
@@ -79,7 +81,7 @@ namespace Antmicro.Renode.Peripherals.Bus
         {
             return accessOperations[t];
         }
-        
+
         public static Method GetMethodFromSignature(Type t)
         {
             return accessMethods[t];
@@ -90,6 +92,8 @@ namespace Antmicro.Renode.Peripherals.Bus
         private static readonly Dictionary<Type, Method> accessMethods;
         private static readonly Dictionary<Type, Operation> accessOperations;
 
+        public delegate ulong QuadWordReadMethod(long offset);
+        public delegate void QuadWordWriteMethod(long offset, ulong value);
         public delegate uint DoubleWordReadMethod(long offset);
         public delegate void DoubleWordWriteMethod(long offset, uint value);
         public delegate ushort WordReadMethod(long offset);
@@ -110,7 +114,9 @@ namespace Antmicro.Renode.Peripherals.Bus
             [ReferencedType(typeof(ushort))]
             Word,
             [ReferencedType(typeof(uint))]
-            DoubleWord
+            DoubleWord,
+            [ReferencedType(typeof(ulong))]
+            QuadWord
         }
 
         private class ReferencedTypeAttribute : Attribute
@@ -123,5 +129,4 @@ namespace Antmicro.Renode.Peripherals.Bus
             public Type ReferencedType { get; private set; }
         }
     }
-    
 }

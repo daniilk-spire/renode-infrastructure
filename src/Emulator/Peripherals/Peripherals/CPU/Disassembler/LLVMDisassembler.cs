@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2021 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -70,23 +70,26 @@ namespace Antmicro.Renode.Disassembler.LLVM
             text = strBldr.ToString();
             return sofar;
         }
-        
-        private IDisassembler GetDisassembler(uint flags) 
+
+        public void GetTripleAndModelKey(uint flags, out string triple, out string model)
         {
-            var triple = SupportedArchitectures[cpu.Architecture];
+            triple = SupportedArchitectures[cpu.Architecture];
             if(triple == "armv7a" && flags > 0)
             {
                 triple = "thumb";
             }
-
-            var key = string.Format("{0} {1}", triple, cpu.Model);
+            if(!ModelTranslations.TryGetValue(cpu.Model, out model))
+            {
+                model = cpu.Model;
+            }
+        }
+        
+        private IDisassembler GetDisassembler(uint flags) 
+        {
+            GetTripleAndModelKey(flags, out var triple, out var model);
+            var key = $"{triple} {model}";
             if(!cache.ContainsKey(key))
             {
-                if(!ModelTranslations.TryGetValue(cpu.Model, out var model))
-                {
-                    model = cpu.Model;
-                }
-
                 IDisassembler disas = new LLVMDisasWrapper(model, triple);
                 if(cpu.Architecture == "arm-m")
                 {
@@ -105,11 +108,12 @@ namespace Antmicro.Renode.Disassembler.LLVM
         
         private static readonly Dictionary<string, string> ModelTranslations = new Dictionary<string, string>
         {
-            { "x86"   , "i386"       },
+            { "x86"       , "i386"       },
             // this case is included because of #3250
-            { "arm926", "arm926ej-s" },
-            { "e200z6", "ppc32"      },
-            { "gr716" , "leon3"      }
+            { "arm926"    , "arm926ej-s" },
+            { "cortex-m4f", "cortex-m4"  },
+            { "e200z6"    , "ppc32"      },
+            { "gr716"     , "leon3"      }
         };
 
         private static readonly Dictionary<string, string> SupportedArchitectures = new Dictionary<string, string>
@@ -199,7 +203,7 @@ namespace Antmicro.Renode.Disassembler.LLVM
                 {
                     PC = pc,
                     OpcodeSize = bytes,
-                    OpcodeString = strBldr.ToString(),
+                    OpcodeString = strBldr.ToString().Replace(" ", ""),
                     DisassemblyString = Marshal.PtrToStringAnsi(strBuf)
                 };
                 

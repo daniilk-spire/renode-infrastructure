@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 //
 //  This file is licensed under the MIT License.
 //  Full license text is available in 'licenses/MIT.txt'.
@@ -7,15 +7,22 @@
 
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure.Registers;
+using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals.Bus;
+using Antmicro.Renode.Peripherals.Timers;
 
 namespace Antmicro.Renode.Peripherals.Miscellaneous
 {
     [AllowedTranslations(AllowedTranslation.ByteToDoubleWord | AllowedTranslation.WordToDoubleWord)]
     public class STM32L0_RCC : BasicDoubleWordPeripheral, IKnownSize
     {
-        public STM32L0_RCC(Machine machine) : base(machine)
+        public STM32L0_RCC(Machine machine, IPeripheral rtc = null, ITimer lptimer = null, long apbFrequency = DefaultApbFrequency, long lsiFrequency = DefaultLsiFrequency, long lseFrequency = DefaultLseFrequency) : base(machine)
         {
+            this.rtc = rtc;
+            this.lptimer = lptimer;
+            this.apbFrequency = apbFrequency;
+            this.lsiFrequency = lsiFrequency;
+            this.lseFrequency = lseFrequency;
             DefineRegisters();
             Reset();
         }
@@ -24,11 +31,11 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
 
         private void DefineRegisters()
         {
-            // Keep in mind that these registers do not affect other
+            // Keep in mind that most of these registers do not affect other
             // peripherals or their clocks.
             Registers.ClockControl.Define(this, 0x300)
                 .WithFlag(0, out var hsi16on, name: "HSI16ON")
-                .WithTaggedFlag("HSI16KERON", 1)
+                .WithFlag(1, name: "HSI16KERON")
                 .WithFlag(2, FieldMode.Read, valueProviderCallback: _ => hsi16on.Value, name: "HSI16RDYF")
                 .WithFlag(3, out var hsi16diven, name: "HSI16DIVEN")
                 .WithFlag(4, FieldMode.Read, valueProviderCallback: _ => hsi16diven.Value, name: "HSI16DIVF")
@@ -39,7 +46,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 .WithReservedBits(10, 6)
                 .WithFlag(16, out var hseon, name: "HSEON")
                 .WithFlag(17, FieldMode.Read, valueProviderCallback: _ => hseon.Value, name: "HSERDY")
-                .WithTag("HSEBYP", 18, 1)
+                .WithFlag(18, name: "HSEBYP")
                 .WithTag("CSSHSEON", 19, 1)
                 .WithValueField(20, 2, name: "RTCPRE")
                 .WithReservedBits(22, 2)
@@ -72,8 +79,10 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 .WithValueField(8, 3, name: "PPRE1")
                 .WithValueField(11, 3, name: "PPRE2")
                 .WithReservedBits(14, 1)
-                .WithTaggedFlag("STOPWUCK", 15)
-                .WithTaggedFlag("PLLSRC", 16)
+                .WithFlag(15, name: "STOPWUCK")
+                // The PLLSRC bit must preserve its value so that the HAL allows disabling the HSI when
+                // the system clock source is the PLL and the HSE is selected as the PLL clock source.
+                .WithFlag(16, name: "PLLSRC")
                 .WithReservedBits(17, 1)
                 .WithValueField(18, 4, name: "PLLMUL")
                 .WithValueField(22, 2, name: "PLLDIV")
@@ -82,38 +91,38 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 ;
 
             Registers.ClockInterruptEnable.Define(this)
-                .WithTaggedFlag("LSIRDYIE", 0)
-                .WithTaggedFlag("LSERDYIE", 1)
-                .WithTaggedFlag("HSI16RDYIE", 2)
-                .WithTaggedFlag("HSERDYIE", 3)
-                .WithTaggedFlag("PLLRDYIE", 4)
-                .WithTaggedFlag("MSIRDYIE", 5)
-                .WithTaggedFlag("HSI48RDYIE", 6)
-                .WithTaggedFlag("CSSLSE", 7)
+                .WithFlag(0, out var lsirdyie, name: "LSIRDYIE")
+                .WithFlag(1, out var lserdyie, name: "LSERDYIE")
+                .WithFlag(2, out var hsi16rdyie, name: "HSI16RDYIE")
+                .WithFlag(3, out var hserdyie, name: "HSERDYIE")
+                .WithFlag(4, out var pllrdyie, name: "PLLRDYIE")
+                .WithFlag(5, out var msirdyie, name: "MSIRDYIE")
+                .WithFlag(6, out var hsi48rdyie, name: "HSI48RDYIE")
+                .WithFlag(7, name: "CSSLSE")
                 .WithReservedBits(8, 24)
                 ;
 
             Registers.ClockInterruptFlag.Define(this)
-                .WithTaggedFlag("LSIRDYF", 0)
-                .WithTaggedFlag("LSERDYF", 1)
-                .WithTaggedFlag("HSI16RDYF", 2)
-                .WithTaggedFlag("HSERDYF", 3)
-                .WithTaggedFlag("PLLRDYF", 4)
-                .WithTaggedFlag("MSIRDYF", 5)
-                .WithTaggedFlag("HSI48RDYF", 6)
+                .WithFlag(0, FieldMode.Read, valueProviderCallback: _ => lsirdyie.Value, name: "LSIRDYF")
+                .WithFlag(1, FieldMode.Read, valueProviderCallback: _ => lserdyie.Value, name: "LSERDYF")
+                .WithFlag(2, FieldMode.Read, valueProviderCallback: _ => hsi16rdyie.Value, name: "HSI16RDYF")
+                .WithFlag(3, FieldMode.Read, valueProviderCallback: _ => hserdyie.Value, name: "HSERDYF")
+                .WithFlag(4, FieldMode.Read, valueProviderCallback: _ => pllrdyie.Value, name: "PLLRDYF")
+                .WithFlag(5, FieldMode.Read, valueProviderCallback: _ => msirdyie.Value, name: "MSIRDYF")
+                .WithFlag(6, FieldMode.Read, valueProviderCallback: _ => hsi48rdyie.Value, name: "HSI48RDYF")
                 .WithTaggedFlag("CSSLSEF", 7)
                 .WithTaggedFlag("CSSHSEF", 8)
                 .WithReservedBits(9, 23)
                 ;
 
             Registers.ClockInterruptClear.Define(this)
-                .WithTaggedFlag("LSIRDYC", 0)
-                .WithTaggedFlag("LSERDYC", 1)
-                .WithTaggedFlag("HSI16RDYC", 2)
-                .WithTaggedFlag("HSERDYC", 3)
-                .WithTaggedFlag("PLLRDYC", 4)
-                .WithTaggedFlag("MSIRDYC", 5)
-                .WithTaggedFlag("HSI48RDYC", 6)
+                .WithFlag(0, FieldMode.Write, writeCallback: (_, value) => { if(value) { lsirdyie.Value = false; } }, name: "LSIRDYC")
+                .WithFlag(1, FieldMode.Write, writeCallback: (_, value) => { if(value) { lserdyie.Value = false; } }, name: "LSERDYC")
+                .WithFlag(2, FieldMode.Write, writeCallback: (_, value) => { if(value) { hsi16rdyie.Value = false;  } }, name: "HSI16RDYC")
+                .WithFlag(3, FieldMode.Write, writeCallback: (_, value) => { if(value) { hserdyie.Value = false;  } }, name: "HSERDYC")
+                .WithFlag(4, FieldMode.Write, writeCallback: (_, value) => { if(value) { pllrdyie.Value = false; } }, name: "PLLRDYC")
+                .WithFlag(5, FieldMode.Write, writeCallback: (_, value) => { if(value) { msirdyie.Value = false; } }, name: "MSIRDYC")
+                .WithFlag(6, FieldMode.Write, writeCallback: (_, value) => { if(value) { hsi48rdyie.Value = false; } }, name: "HSI48RDYC")
                 .WithTaggedFlag("CSSLSEC", 7)
                 .WithTaggedFlag("CSSHSEC", 8)
                 .WithReservedBits(9, 23)
@@ -189,148 +198,149 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 .WithTaggedFlag("LPTIM1RST", 31)
                 ;
 
+            // Most clock enable bits are flags instead of tags to reduce the number of warnings in the log
             Registers.IoPortClockEnable.Define(this)
-                .WithTaggedFlag("IOPAEN", 0)
-                .WithTaggedFlag("IOPBEN", 1)
-                .WithTaggedFlag("IOPCEN", 2)
-                .WithTaggedFlag("IOPDEN", 3)
-                .WithTaggedFlag("IOPEEN", 4)
+                .WithFlag(0, name: "IOPAEN")
+                .WithFlag(1, name: "IOPBEN")
+                .WithFlag(2, name: "IOPCEN")
+                .WithFlag(3, name: "IOPDEN")
+                .WithFlag(4, name: "IOPEEN")
                 .WithReservedBits(5, 2)
-                .WithTaggedFlag("IOPHEN", 7)
+                .WithFlag(7, name: "IOPHEN")
                 ;
 
             Registers.AhbPeripheralClockEnable.Define(this, 0x100)
-                .WithTaggedFlag("DMAEN", 0)
+                .WithFlag(0, name: "DMAEN")
                 .WithReservedBits(1, 7)
-                .WithTaggedFlag("MIFEN", 8)
+                .WithFlag(8, name: "MIFEN")
                 .WithReservedBits(9, 3)
-                .WithTaggedFlag("CRCEN", 12)
+                .WithFlag(12, name: "CRCEN")
                 .WithReservedBits(13, 3)
-                .WithTaggedFlag("TSCEN", 16)
+                .WithFlag(16, name: "TSCEN")
                 .WithReservedBits(17, 3)
-                .WithTaggedFlag("RNGEN", 20)
+                .WithFlag(20, name: "RNGEN")
                 .WithReservedBits(21, 3)
-                .WithTaggedFlag("CRYPEN", 24)
+                .WithFlag(24, name: "CRYPEN")
                 .WithReservedBits(25, 7)
                 ;
 
             Registers.Apb2PeripheralClockEnable.Define(this)
-                .WithTaggedFlag("SYSCFEN", 0)
+                .WithFlag(0, name: "SYSCFEN")
                 .WithReservedBits(1, 1)
-                .WithTaggedFlag("TIM21EN", 2)
+                .WithFlag(2, name: "TIM21EN")
                 .WithReservedBits(3, 2)
-                .WithTaggedFlag("TIM22EN", 5)
+                .WithFlag(5, name: "TIM22EN")
                 .WithReservedBits(6, 1)
-                .WithTaggedFlag("FWEN", 7)
+                .WithFlag(7, name: "FWEN")
                 .WithReservedBits(8, 1)
-                .WithTaggedFlag("ADCEN", 9)
+                .WithFlag(9, name: "ADCEN")
                 .WithReservedBits(10, 2)
-                .WithTaggedFlag("SPI1EN", 12)
+                .WithFlag(12, name: "SPI1EN")
                 .WithReservedBits(13, 1)
-                .WithTaggedFlag("USART1EN", 14)
+                .WithFlag(14, name: "USART1EN")
                 .WithReservedBits(15, 7)
-                .WithTaggedFlag("DBGEN", 22)
+                .WithFlag(22, name: "DBGEN")
                 .WithReservedBits(23, 9)
                 ;
 
             Registers.Apb1PeripheralClockEnable.Define(this)
-                .WithTaggedFlag("TIM2EN", 0)
-                .WithTaggedFlag("TIM3EN", 1)
+                .WithFlag(0, name: "TIM2EN")
+                .WithFlag(1, name: "TIM3EN")
                 .WithReservedBits(2, 2)
-                .WithTaggedFlag("TIM6EN", 4)
-                .WithTaggedFlag("TIM7EN", 5)
+                .WithFlag(4, name: "TIM6EN")
+                .WithFlag(5, name: "TIM7EN")
                 .WithReservedBits(6, 3)
-                .WithTaggedFlag("LCDEN", 9)
+                .WithFlag(9, name: "LCDEN")
                 .WithReservedBits(10, 1)
-                .WithTaggedFlag("WWDGEN", 11)
+                .WithFlag(11, name: "WWDGEN")
                 .WithReservedBits(12, 2)
-                .WithTaggedFlag("SPI2EN", 14)
+                .WithFlag(14, name: "SPI2EN")
                 .WithReservedBits(15, 2)
-                .WithTaggedFlag("USART2EN", 17)
-                .WithTaggedFlag("LPUART1EN", 18)
-                .WithTaggedFlag("USART4EN", 19)
-                .WithTaggedFlag("USART5EN", 20)
-                .WithTaggedFlag("I2C1EN", 21)
-                .WithTaggedFlag("I2C2EN", 22)
-                .WithTaggedFlag("USBEN", 23)
+                .WithFlag(17, name: "USART2EN")
+                .WithFlag(18, name: "LPUART1EN")
+                .WithFlag(19, name: "USART4EN")
+                .WithFlag(20, name: "USART5EN")
+                .WithFlag(21, name: "I2C1EN")
+                .WithFlag(22, name: "I2C2EN")
+                .WithFlag(23, name: "USBEN")
                 .WithReservedBits(24, 3)
-                .WithTaggedFlag("CRSEN", 27)
-                .WithTaggedFlag("PWREN", 28)
-                .WithTaggedFlag("DACEN", 29)
-                .WithTaggedFlag("I2C3EN", 30)
-                .WithTaggedFlag("LPTIM1EN", 31)
+                .WithFlag(27, name: "CRSEN")
+                .WithFlag(28, name: "PWREN")
+                .WithFlag(29, name: "DACEN")
+                .WithFlag(30, name: "I2C3EN")
+                .WithFlag(31, name: "LPTIM1EN")
                 ;
 
             Registers.IoPortClockEnableInSleepMode.Define(this)
-                .WithTaggedFlag("IOPASMEN", 0)
-                .WithTaggedFlag("IOPBSMEN", 1)
-                .WithTaggedFlag("IOPCSMEN", 2)
-                .WithTaggedFlag("IOPDSMEN", 3)
-                .WithTaggedFlag("IOPESMEN", 4)
+                .WithFlag(0, name: "IOPASMEN")
+                .WithFlag(1, name: "IOPBSMEN")
+                .WithFlag(2, name: "IOPCSMEN")
+                .WithFlag(3, name: "IOPDSMEN")
+                .WithFlag(4, name: "IOPESMEN")
                 .WithReservedBits(5, 2)
-                .WithTaggedFlag("IOPHSMEN", 7)
+                .WithFlag(7, name: "IOPHSMEN")
                 ;
 
             Registers.AhbPeripheralClockEnableInSleepMode.Define(this, 0x100)
-                .WithTaggedFlag("DMASMEN", 0)
+                .WithFlag(0, name: "DMASMEN")
                 .WithReservedBits(1, 7)
-                .WithTaggedFlag("MIFSMEN", 8)
+                .WithFlag(8, name: "MIFSMEN")
                 .WithReservedBits(9, 3)
-                .WithTaggedFlag("CRCSMEN", 12)
+                .WithFlag(12, name: "CRCSMEN")
                 .WithReservedBits(13, 3)
-                .WithTaggedFlag("TSCSMEN", 16)
+                .WithFlag(16, name: "TSCSMEN")
                 .WithReservedBits(17, 3)
-                .WithTaggedFlag("RNGSMEN", 20)
+                .WithFlag(20, name: "RNGSMEN")
                 .WithReservedBits(21, 3)
-                .WithTaggedFlag("CRYPSMEN", 24)
+                .WithFlag(24, name: "CRYPSMEN")
                 .WithReservedBits(25, 7)
                 ;
 
             Registers.Apb2PeripheralClockEnableInSleepMode.Define(this)
-                .WithTaggedFlag("SYSCFSMEN", 0)
+                .WithFlag(0, name: "SYSCFSMEN")
                 .WithReservedBits(1, 1)
-                .WithTaggedFlag("TIM21SMEN", 2)
+                .WithFlag(2, name: "TIM21SMEN")
                 .WithReservedBits(3, 2)
-                .WithTaggedFlag("TIM22SMEN", 5)
+                .WithFlag(5, name: "TIM22SMEN")
                 .WithReservedBits(6, 1)
-                .WithTaggedFlag("FWSMEN", 7)
+                .WithFlag(7, name: "FWSMEN")
                 .WithReservedBits(8, 1)
-                .WithTaggedFlag("ADCSMEN", 9)
+                .WithFlag(9, name: "ADCSMEN")
                 .WithReservedBits(10, 2)
-                .WithTaggedFlag("SPI1SMEN", 12)
+                .WithFlag(12, name: "SPI1SMEN")
                 .WithReservedBits(13, 1)
-                .WithTaggedFlag("USART1SMEN", 14)
+                .WithFlag(14, name: "USART1SMEN")
                 .WithReservedBits(15, 7)
-                .WithTaggedFlag("DBGSMEN", 22)
+                .WithFlag(22, name: "DBGSMEN")
                 .WithReservedBits(23, 9)
                 ;
 
             Registers.Apb1PeripheralClockEnableInSleepMode.Define(this)
-                .WithTaggedFlag("TIM2SMEN", 0)
-                .WithTaggedFlag("TIM3SMEN", 1)
+                .WithFlag(0, name: "TIM2SMEN")
+                .WithFlag(1, name: "TIM3SMEN")
                 .WithReservedBits(2, 2)
-                .WithTaggedFlag("TIM6SMEN", 4)
-                .WithTaggedFlag("TIM7SMEN", 5)
+                .WithFlag(4, name: "TIM6SMEN")
+                .WithFlag(5, name: "TIM7SMEN")
                 .WithReservedBits(6, 3)
-                .WithTaggedFlag("LCDSMEN", 9)
+                .WithFlag(9, name: "LCDSMEN")
                 .WithReservedBits(10, 1)
-                .WithTaggedFlag("WWDGSMEN", 11)
+                .WithFlag(11, name: "WWDGSMEN")
                 .WithReservedBits(12, 2)
-                .WithTaggedFlag("SPI2SMEN", 14)
+                .WithFlag(14, name: "SPI2SMEN")
                 .WithReservedBits(15, 2)
-                .WithTaggedFlag("USART2SMEN", 17)
-                .WithTaggedFlag("LPUART1SMEN", 18)
-                .WithTaggedFlag("USART4SMEN", 19)
-                .WithTaggedFlag("USART5SMEN", 20)
-                .WithTaggedFlag("I2C1SMEN", 21)
-                .WithTaggedFlag("I2C2SMEN", 22)
-                .WithTaggedFlag("USBSMEN", 23)
+                .WithFlag(17, name: "USART2SMEN")
+                .WithFlag(18, name: "LPUART1SMEN")
+                .WithFlag(19, name: "USART4SMEN")
+                .WithFlag(20, name: "USART5SMEN")
+                .WithFlag(21, name: "I2C1SMEN")
+                .WithFlag(22, name: "I2C2SMEN")
+                .WithFlag(23, name: "USBSMEN")
                 .WithReservedBits(24, 3)
-                .WithTaggedFlag("CRSSMEN", 27)
-                .WithTaggedFlag("PWRSMEN", 28)
-                .WithTaggedFlag("DACSMEN", 29)
-                .WithTaggedFlag("I2C3SMEN", 30)
-                .WithTaggedFlag("LPTIM1SMEN", 31)
+                .WithFlag(27, name: "CRSSMEN")
+                .WithFlag(28, name: "PWRSMEN")
+                .WithFlag(29, name: "DACSMEN")
+                .WithFlag(30, name: "I2C3SMEN")
+                .WithFlag(31, name: "LPTIM1SMEN")
                 ;
 
             Registers.ClockConfigurationCcipr.Define(this)
@@ -341,7 +351,30 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 .WithValueField(12, 2, name: "I2C1SEL")
                 .WithReservedBits(14, 2)
                 .WithValueField(16, 2, name: "I2C3SEL")
-                .WithValueField(18, 2, name: "LPTIM1SEL")
+                .WithEnumField<DoubleWordRegister, LpTimerClockSourceSelection>(18, 2, changeCallback: (_, value) =>
+                    {
+                        if(lptimer == null) 
+                        {
+                            this.Log(LogLevel.Error, "Trying to change LPTimer frequency, but it was not passed in the RCC constructor, ignoring");
+                            return;
+                        }
+                        switch(value)
+                        {
+                            case LpTimerClockSourceSelection.Apb:
+                                lptimer.Frequency = apbFrequency;
+                                break;
+                            case LpTimerClockSourceSelection.Lsi:
+                                lptimer.Frequency = lsiFrequency;
+                                break;
+                            case LpTimerClockSourceSelection.Hsi16:
+                                lptimer.Frequency = Hsi16Frequency;
+                                break;
+                            case LpTimerClockSourceSelection.Lse:
+                                lptimer.Frequency = lseFrequency;
+                                break;
+                        }
+                        this.Log(LogLevel.Debug, "LpTimer clock frequency changed to {0}", lptimer.Frequency);
+                    }, name: "LPTIM1SEL")
                 .WithReservedBits(20, 6)
                 .WithTaggedFlag("HSI48SEL", 26)
                 .WithReservedBits(27, 5)
@@ -358,8 +391,29 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 .WithTaggedFlag("CSSLSEON", 13)
                 .WithTaggedFlag("CSSLSED", 14)
                 .WithValueField(16, 2, name: "RTCSEL")
-                .WithTaggedFlag("RTCEN", 18)
-                .WithTaggedFlag("RTCRST", 19)
+                .WithFlag(18, writeCallback: (_, value) =>
+                    {
+                        if(rtc == null && value)
+                        {
+                            this.Log(LogLevel.Error, "Trying to enable RTC, but it was not passed int the RCC constructor, ignoring");
+                            return;
+                        }
+                        machine.SystemBus.SetPeripheralEnabled(rtc, value);
+                    },
+                    valueProviderCallback: _ => rtc == null ? false : machine.SystemBus.IsPeripheralEnabled(rtc), name: "RTCEN")
+                .WithFlag(19, writeCallback: (_, value) =>
+                    {
+                        if(value)
+                        {
+                            if(rtc == null)
+                            {
+                                this.Log(LogLevel.Error, "Trying to disable RTC, but it was not passed int the RCC constructor, ignoring");
+                                return;
+                            }
+                            rtc.Reset();
+                            machine.SystemBus.DisablePeripheral(rtc);
+                        }
+                    }, name: "RTCRST")
                 .WithReservedBits(20, 3)
                 .WithTaggedFlag("RMVF", 23)
                 .WithTaggedFlag("FWRSTF", 24)
@@ -371,6 +425,30 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 .WithTaggedFlag("WWDGRSTF", 30)
                 .WithTaggedFlag("LPWRRSTF", 31)
                 ;
+        }
+
+        private const long DefaultApbFrequency = 32000000;
+        private const long DefaultLsiFrequency = 37000;
+        private const long DefaultLseFrequency = 32768;
+        private const long Hsi16Frequency = 16000000;
+
+        private readonly IPeripheral rtc;
+        private readonly ITimer lptimer;
+        private readonly long apbFrequency;
+        private readonly long lsiFrequency;
+        private readonly long lseFrequency;
+
+        // There can't be one common ClockSourceSelection enum because different peripherals
+        // have different sets of possible values:
+        // I2C has APB, system clock, HSI16, reserved;
+        // UARTs have APB, system clock, HSI16, LSE.
+        // The system clock can be HSI16, HSE, PLL, MSI (default)
+        public enum LpTimerClockSourceSelection
+        {
+            Apb,
+            Lsi,
+            Hsi16,
+            Lse,
         }
 
         private enum Registers

@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -42,7 +42,7 @@ namespace Antmicro.Renode.Peripherals.CPU
 
         public virtual void WriteHeader() { }
 
-        public virtual void Flush() { }
+        public virtual void FlushBuffer() { }
 
         public TranslationCPU AttachedCPU { get; }
 
@@ -57,7 +57,7 @@ namespace Antmicro.Renode.Peripherals.CPU
 
             if(disposing)
             {
-                Flush();
+                FlushBuffer();
                 stream?.Dispose();
             }
             disposed = true;
@@ -94,45 +94,101 @@ namespace Antmicro.Renode.Peripherals.CPU
             stream.Write(Encoding.ASCII.GetBytes(FormatSignature), 0, Encoding.ASCII.GetByteCount(FormatSignature));
             stream.WriteByte(FormatVersion);
             stream.WriteByte((byte)pcWidth);
-            stream.WriteByte((byte)(format != TraceFormat.PC ? 1 : 0));
+            stream.WriteByte((byte)(IncludeOpcode ? 1 : 0));
+            if(IncludeOpcode)
+            {
+                AttachedCPU.Disassembler.GetTripleAndModelKey(0, out var triple, out var model);
+                var tripleAndModelString = $"{triple} {model}";
+                usesThumbFlag = tripleAndModelString.Contains("armv7a");
+                var byteCount = Encoding.ASCII.GetByteCount(tripleAndModelString);
+
+                stream.WriteByte((byte)(usesThumbFlag ? 1 : 0));
+                stream.WriteByte((byte)byteCount);
+                stream.Write(Encoding.ASCII.GetBytes(tripleAndModelString), 0, byteCount);
+            }
         }
 
         public override void Write(ExecutionTracer.Block block)
         {
             var pc = block.FirstInstructionPC;
-            var counter = 0;
+            var counter = 0u;
+    
+            var hasAdditionalData = block.AdditionalDataInTheBlock.TryDequeue(out var insnAdditionalData);
 
-            while(counter < (int)block.InstructionsCount)
+            if(usesThumbFlag)
+            {
+                // if the CPU supports thumb, we need to mark translation blocks 
+                // with a flag and length of the block, that is needed to properly disassemble the trace
+                var isThumb = block.DisassemblyFlags > 0;
+                WriteByteToBuffer((byte)(isThumb ? 1 : 0));
+                WriteInstructionsCountToBuffer(block.InstructionsCount);
+            }
+                                            
+            while(counter < block.InstructionsCount)
             {
                 if(!TryReadAndDecodeInstruction(pc, block.DisassemblyFlags, out var opcode))
                 {
                     break;
                 }
 
-                if(pcWidth > 0)
+                if(IncludePC)
                 {
-                    BitHelper.GetBytesFromValue(buffer, bufferPosition, pc, pcWidth, true);
-                    bufferPosition += pcWidth;
+                    WritePCToBuffer(pc);
                 }
-                if(format != TraceFormat.PC)
+                if(IncludeOpcode)
                 {
-                    buffer[bufferPosition] = (byte)opcode.Length;
-                    bufferPosition += 1;
-                    opcode.CopyTo(buffer, bufferPosition);
-                    bufferPosition += opcode.Length;
+                    WriteByteToBuffer((byte)opcode.Length);
+                    WriteBytesToBuffer(opcode);
                 }
+                while(hasAdditionalData && insnAdditionalData.PC == pc)
+                {
+                    WriteByteToBuffer((byte)insnAdditionalData.Type);
+                    WriteBytesToBuffer(insnAdditionalData.GetBinaryRepresentation());
+                    hasAdditionalData = block.AdditionalDataInTheBlock.TryDequeue(out insnAdditionalData);
+                }
+                WriteByteToBuffer((byte)AdditionalDataType.None);
 
                 pc += (ulong)opcode.Length;
                 counter++;
 
-                if(bufferPosition + pcWidth + (format != TraceFormat.PC ? Byte.MaxValue + 1 : 0) >= buffer.Length)
+                if(bufferPosition >= BufferFlushLevel)
                 {
-                    Flush();
+                    FlushBuffer();
                 }
             }
         }
 
-        public override void Flush()
+        private bool usesThumbFlag;
+
+        private bool IncludeOpcode => this.format != TraceFormat.PC;
+
+        private bool IncludePC => this.format != TraceFormat.Opcode;
+
+        private void WriteBytesToBuffer(byte[] data)
+        {
+            Buffer.BlockCopy(data, 0, buffer, bufferPosition, data.Length);
+            bufferPosition += data.Length;
+        }
+
+        private void WriteByteToBuffer(byte data)
+        {
+            buffer[bufferPosition] = data;
+            bufferPosition += 1;
+        }
+
+        private void WritePCToBuffer(ulong pc)
+        {
+            BitHelper.GetBytesFromValue(buffer, bufferPosition, pc, pcWidth, true);
+            bufferPosition += pcWidth;
+        }
+
+        private void WriteInstructionsCountToBuffer(ulong count)
+        {
+            BitHelper.GetBytesFromValue(buffer, bufferPosition, count, 8, true);
+            bufferPosition += 8;
+        }
+
+        public override void FlushBuffer()
         {
             stream.Write(buffer, 0, bufferPosition);
             stream.Flush();
@@ -180,10 +236,11 @@ namespace Antmicro.Renode.Peripherals.CPU
         private readonly int pcWidth;
 
         private const string FormatSignature = "ReTrace";
-        private const byte FormatVersion = 1;
+        private const byte FormatVersion = 2;
 
         private const int CacheSize = 100000;
         private const int BufferSize = 10000;
+        private const int BufferFlushLevel = 9000;
     }
 
     public class TraceTextWriter : TraceWriter
@@ -208,6 +265,7 @@ namespace Antmicro.Renode.Peripherals.CPU
         {
             var pc = block.FirstInstructionPC;
             var counter = 0;
+            var hasAdditionalData = block.AdditionalDataInTheBlock.TryDequeue(out var nextAdditionalData);
 
             while(counter < (int)block.InstructionsCount)
             {
@@ -245,19 +303,19 @@ namespace Antmicro.Renode.Peripherals.CPU
                             }
                             break;
                     }
-
+                    while(hasAdditionalData && (nextAdditionalData.PC == result.PC))
+                    {
+                        stringBuilder.AppendFormat("{0}\n", nextAdditionalData.GetStringRepresentation());
+                        hasAdditionalData = block.AdditionalDataInTheBlock.TryDequeue(out nextAdditionalData);
+                    }
                     pc += (ulong)result.OpcodeSize;
                     counter++;
                 }
-
-                if(stringBuilder.Length > BufferFlushLevel)
-                {
-                    Flush();
-                }
+                FlushIfNecessary();
             }
         }
 
-        public override void Flush()
+        public override void FlushBuffer()
         {
             textWriter.Write(stringBuilder);
             textWriter.Flush();
@@ -274,11 +332,19 @@ namespace Antmicro.Renode.Peripherals.CPU
 
             if(disposing)
             {
-                Flush();
+                FlushBuffer();
                 textWriter?.Dispose();
                 stream?.Dispose();
             }
             disposed = true;
+        }
+
+        private void FlushIfNecessary()
+        {
+            if(stringBuilder.Length > BufferFlushLevel)
+            {
+                FlushBuffer();
+            }
         }
 
         private bool TryReadAndDisassembleInstruction(ulong pc, uint flags, out DisassemblyResult result)

@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -21,8 +21,10 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
 {
     public class OpenTitan_CSRNG: BasicDoubleWordPeripheral, IKnownSize
     {
-        public OpenTitan_CSRNG(Machine machine) : base(machine)
+        public OpenTitan_CSRNG(Machine machine, OpenTitan_EntropySource entropySource) : base(machine)
         {
+            this.entropySource = entropySource;
+
             DefineRegisters();
 
             RequestCompletedIRQ = new GPIO();
@@ -41,6 +43,24 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             generatedBitsFifo = new Queue<uint>();
             appendedData = new List<uint>();
             Reset();
+        }
+
+        public bool RequestData(out uint result)
+        {
+            if(generatedBitsFifo.TryDequeue(out result))
+            {
+                return generatedBitsFifo.Count != 0;
+            }
+            else
+            {
+                this.Log(LogLevel.Warning, "Trying to read from empty FIFO");
+                return false;
+            }
+        }
+
+        public void EdnSoftwareCommandRequestWrite(uint writeValue)
+        {
+            HandleCommandRequestWrite(writeValue);
         }
 
         public override void Reset()
@@ -502,12 +522,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             if(useEntropy)
             {
                 fakeEntropy.SetEntropySizeInBytes(DefaultSeedSizeInBytes);
-                fakeEntropy.SetEntropySource(() =>
-                {
-                    var randomBytes = new byte[DefaultSeedSizeInBytes];
-                    randomSource.NextBytes(randomBytes);
-                    return randomBytes;
-                });
+                fakeEntropy.SetEntropySource(entropySource.RequestEntropySourceData);
             }
             else
             {
@@ -640,6 +655,8 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private const int BytesPerEntropyUnit = 16;
         private const int DefaultSeedSizeInBytes = 48;
         private const int InternalStateSoftwareStateSelection = 2;
+
+        private readonly OpenTitan_EntropySource entropySource;
 
         #pragma warning disable format
         public enum RandomType

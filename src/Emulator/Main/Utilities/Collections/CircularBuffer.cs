@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2019 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -68,6 +68,17 @@ namespace Antmicro.Renode.Utilities.Collections
             }
         }
 
+        public bool TryPeek(out T result)
+        {
+            if(IsEmpty)
+            {
+                result = default(T);
+                return false;
+            }
+            result = buffer[FirstPosition];
+            return true;
+        }
+
         public void CopyTo(T[] array, int arrayIndex)
         {
             if(IsEmpty)
@@ -102,7 +113,7 @@ namespace Antmicro.Renode.Utilities.Collections
                     currentYield = 0;
                 }
             }
-            while(currentYield != (end + 1 % buffer.Length));
+            while(currentYield != (end + 1) % buffer.Length);
         }
 
         public T this[int i]
