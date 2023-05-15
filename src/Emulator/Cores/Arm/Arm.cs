@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2021 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -23,9 +23,9 @@ using Endianess = ELFSharp.ELF.Endianess;
 namespace Antmicro.Renode.Peripherals.CPU
 {
     [GPIO(NumberOfInputs = 2)]
-    public partial class Arm : TranslationCPU, ICPUWithHooks, IPeripheralRegister<SemihostingUart, NullRegistrationPoint>
+    public abstract partial class Arm : TranslationCPU, ICPUWithHooks, IPeripheralRegister<SemihostingUart, NullRegistrationPoint>
     {
-        public Arm(string cpuType, Machine machine, uint id = 0, Endianess endianness = Endianess.LittleEndian) : base(id, cpuType, machine, endianness)
+        public Arm(string cpuType, Machine machine, uint cpuId = 0, Endianess endianness = Endianess.LittleEndian) : base(cpuId, cpuType, machine, endianness)
         {
         }
 
@@ -90,94 +90,76 @@ namespace Antmicro.Renode.Peripherals.CPU
         [Export]
         protected uint Read32CP15(uint instruction)
         {
-            return Read32CP15Inner(instruction);
+            return Read32CP15Inner(new Coprocessor32BitMoveInstruction(instruction));
         }
 
         [Export]
         protected void Write32CP15(uint instruction, uint value)
         {
-            Write32CP15Inner(instruction, value);
+            Write32CP15Inner(new Coprocessor32BitMoveInstruction(instruction), value);
         }
 
         [Export]
         protected ulong Read64CP15(uint instruction)
         {
-            return Read64CP15Inner(instruction);
+            return Read64CP15Inner(new Coprocessor64BitMoveInstruction(instruction));
         }
 
         [Export]
         protected void Write64CP15(uint instruction, ulong value)
         {
-            Write64CP15Inner(instruction, value);
+            Write64CP15Inner(new Coprocessor64BitMoveInstruction(instruction), value);
         }
 
         protected override Interrupt DecodeInterrupt(int number)
         {
             switch(number)
             {
-            case 0:
-                return Interrupt.Hard;
-            case 1:
-                return Interrupt.TargetExternal1;
-            default:
-                throw InvalidInterruptNumberException;
+                case 0:
+                    return Interrupt.Hard;
+                case 1:
+                    return Interrupt.TargetExternal1;
+                default:
+                    throw InvalidInterruptNumberException;
             }
         }
 
-        protected virtual uint Read32CP15Inner(uint instruction)
+        protected virtual uint Read32CP15Inner(Coprocessor32BitMoveInstruction instruction)
         {
-            uint op1, op2, crm, crn;
-            crm = instruction & 0xf;
-            crn = (instruction >> 16) & 0xf;
-            op1 = (instruction >> 21) & 7;
-            op2 = (instruction >> 5) & 7;
-
-            if((op1 == 4) && (op2 == 0) && (crm == 0))
+            if(instruction.Opc1 == 4 && instruction.Opc2 == 0 && instruction.CRm == 0)
             {
                 // scu
                 var scus = machine.GetPeripheralsOfType<SnoopControlUnit>().ToArray();
                 switch(scus.Length)
                 {
-                case 0:
-                    this.Log(LogLevel.Warning, "Trying to read SCU address, but SCU was not found - returning 0x0.");
-                    return 0;
-                case 1:
-                    return (uint)((BusRangeRegistration)(machine.GetPeripheralRegistrationPoints(machine.SystemBus, scus[0]).Single())).Range.StartAddress;
-                default:
-                    this.Log(LogLevel.Error, "Trying to read SCU address, but more than one instance was found. Aborting.");
-                    throw new CpuAbortException();
+                    case 0:
+                        this.Log(LogLevel.Warning, "Trying to read SCU address, but SCU was not found - returning 0x0.");
+                        return 0;
+                    case 1:
+                        return (uint)((BusRangeRegistration)(machine.GetPeripheralRegistrationPoints(machine.SystemBus, scus[0]).Single())).Range.StartAddress;
+                    default:
+                        this.Log(LogLevel.Error, "Trying to read SCU address, but more than one instance was found. Aborting.");
+                        throw new CpuAbortException();
                 }
             }
-            this.Log(LogLevel.Warning, "Unknown CP15 32-bit read - op1={0}, op2={1}, crm={2}, crn={3} - returning 0x0", op1, op2, crm, crn);
+            this.Log(LogLevel.Warning, "Unknown CP15 32-bit read - {0} - returning 0x0", instruction);
             return 0;
         }
 
-        protected virtual void Write32CP15Inner(uint instruction, uint value)
+        protected virtual void Write32CP15Inner(Coprocessor32BitMoveInstruction instruction, uint value)
         {
-            uint op1, op2, crm, crn;
-            crm = instruction & 0xf;
-            crn = (instruction >> 16) & 0xf;
-            op1 = (instruction >> 21) & 7;
-            op2 = (instruction >> 5) & 7;
-
-            this.Log(LogLevel.Warning, "Unknown CP15 32-bit write - op1={0}, op2={1}, crm={2}, crn={3}", op1, op2, crm, crn);
+            this.Log(LogLevel.Warning, "Unknown CP15 32-bit write - {0}", instruction);
         }
 
-        protected virtual ulong Read64CP15Inner(uint instruction)
+        protected virtual ulong Read64CP15Inner(Coprocessor64BitMoveInstruction instruction)
         {
-            uint op1, crm;
-            crm = instruction & 0xf;
-            op1 = (instruction >> 4) & 0xf;
-            this.Log(LogLevel.Warning, "Unknown CP15 64-bit read - op1={0}, crm={1} - returning 0x0", op1, crm);
+            this.Log(LogLevel.Warning, "Unknown CP15 64-bit read - {0} - returning 0x0", instruction);
             return 0;
         }
 
-        protected virtual void Write64CP15Inner(uint instruction, ulong value)
+        protected virtual void Write64CP15Inner(Coprocessor64BitMoveInstruction instruction, ulong value)
         {
-            uint op1, crm;
-            crm = instruction & 0xf;
-            op1 = (instruction >> 4) & 0xf;
-            this.Log(LogLevel.Warning, "Unknown CP15 64-bit write - op1={0}, crm={1}", op1, crm);
+            this.Log(LogLevel.Warning, "Unknown CP15 64-bit write - {0}", instruction);
         }
 
         protected virtual UInt32 BeforePCWrite(UInt32 value)
@@ -201,7 +183,7 @@ namespace Antmicro.Renode.Peripherals.CPU
             /* Returns true if the oldest bit of 'abcd' field is set to 0 and the condition is met.
              * If there is no trailing one in the lower part, we are not in an IT block*/
             var MaskBit = (itState & 0x10) == 0 && ((itState & 0xF) > 0);
-            var condition = ( itState >> 4 ) & 0x0E;
+            var condition = (itState >> 4) & 0x0E;
             if(EvaluateConditionCode(condition))
             {
                 return MaskBit;
@@ -248,27 +230,27 @@ namespace Antmicro.Renode.Peripherals.CPU
             uint result = 0;
             switch(operation)
             {
-            case 7: // SYS_READC
-                if(uart == null) break;
-                result = uart.SemihostingGetByte();
-                break;
-            case 3: // SYS_WRITEC
-            case 4: // SYS_WRITE0
-                if(uart == null) break;
-                string s = "";
-                var addr = this.TranslateAddress(r1, MpuAccess.InstructionFetch);
-                do
-                {
-                    var c = this.Bus.ReadByte(addr++);
-                    if(c == 0) break;
-                    s = s + Convert.ToChar(c);
-                    if((operation) == 3) break; // SYS_WRITEC
-                } while(true);
-                uart.SemihostingWriteString(s);
-                break;
-            default:
-                this.Log(LogLevel.Debug, "Unknown semihosting operation: 0x{0:X}", operation);
-                break;
+                case 7: // SYS_READC
+                    if(uart == null) break;
+                    result = uart.SemihostingGetByte();
+                    break;
+                case 3: // SYS_WRITEC
+                case 4: // SYS_WRITE0
+                    if(uart == null) break;
+                    string s = "";
+                    var addr = this.TranslateAddress(r1, MpuAccess.InstructionFetch);
+                    do
+                    {
+                        var c = this.Bus.ReadByte(addr++);
+                        if(c == 0) break;
+                        s = s + Convert.ToChar(c);
+                        if((operation) == 3) break; // SYS_WRITEC
+                    } while(true);
+                    uart.SemihostingWriteString(s);
+                    break;
+                default:
+                    this.Log(LogLevel.Debug, "Unknown semihosting operation: 0x{0:X}", operation);
+                    break;
             }
             return result;
         }
@@ -324,7 +306,7 @@ namespace Antmicro.Renode.Peripherals.CPU
 
 #pragma warning restore 649
 
-        private readonly string[] ExceptionDescriptions = 
+        private readonly string[] ExceptionDescriptions =
         {
             "Undefined instruction",
             "Software interrupt",
@@ -336,5 +318,68 @@ namespace Antmicro.Renode.Peripherals.CPU
             "Kernel Trap",
             "STREX instruction"
         };
+
+        protected struct Coprocessor32BitMoveInstruction
+        {
+            public Coprocessor32BitMoveInstruction(uint instruction)
+            {
+                Opc1 = BitHelper.GetValue(instruction, Opc1Offset, Opc1Size);
+                CRn = BitHelper.GetValue(instruction, CRnOffset, CRnSize);
+                Opc2 = BitHelper.GetValue(instruction, Opc2Offset, Opc2Size);
+                CRm = BitHelper.GetValue(instruction, CRmOffset, CRmSize);
+                FieldsOnly = instruction & FieldsMask;
+            }
+
+            public override string ToString()
+            {
+                return $"op1={Opc1}, op2={Opc2}, crm={CRm}, crn={CRn}";
+            }
+
+            public uint Opc1 { get; }
+            public uint CRn { get; }
+            public uint Opc2 { get; }
+            public uint CRm { get; }
+            public uint FieldsOnly { get; }
+
+            public static readonly uint FieldsMask = BitHelper.CalculateMask(Opc1Size, Opc1Offset) | BitHelper.CalculateMask(CRnSize, CRnOffset)
+                | BitHelper.CalculateMask(Opc2Size, Opc2Offset) | BitHelper.CalculateMask(CRmSize, CRmOffset);
+
+            private const int Opc1Size = 3;
+            private const int CRnSize = 4;
+            private const int Opc2Size = 3;
+            private const int CRmSize = 4;
+
+            private const int Opc1Offset = 21;
+            private const int CRnOffset = 16;
+            private const int Opc2Offset = 5;
+            private const int CRmOffset = 0;
+        }
+
+        protected struct Coprocessor64BitMoveInstruction
+        {
+            public Coprocessor64BitMoveInstruction(uint instruction)
+            {
+                Opc1 = BitHelper.GetValue(instruction, Opc1Offset, Opc1Size);
+                CRm = BitHelper.GetValue(instruction, CRmOffset, CRmSize);
+                FieldsOnly = instruction & FieldsMask;
+            }
+
+            public override string ToString()
+            {
+                return $"op1={Opc1}, crm={CRm}";
+            }
+
+            public uint Opc1 { get; }
+            public uint CRm { get; }
+            public uint FieldsOnly { get; }
+
+            public static readonly uint FieldsMask = BitHelper.CalculateMask(Opc1Size, Opc1Offset) | BitHelper.CalculateMask(CRmSize, CRmOffset);
+
+            private const int Opc1Size = 4;
+            private const int CRmSize = 4;
+
+            private const int Opc1Offset = 4;
+            private const int CRmOffset = 0;
+        }
     }
 }

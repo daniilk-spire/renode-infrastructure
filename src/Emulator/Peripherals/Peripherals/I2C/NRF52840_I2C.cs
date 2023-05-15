@@ -174,9 +174,9 @@ namespace Antmicro.Renode.Peripherals.I2C
                 .WithReservedBits(8, 1)
                 .WithFlag(9, out errorInterruptEnabled, FieldMode.Read | FieldMode.Set, name: "ERROR")
                 .WithReservedBits(10, 4)
-                .WithTag("BB", 14, 1)
+                .WithFlag(14, name: "BB") // this is a flag to limit warnings, we don't support the byte-boundary interrupt
                 .WithReservedBits(15, 3)
-                .WithTag("SUSPENDED", 18, 1)
+                .WithFlag(18, name: "SUSPENDED") // this is a flag to limit warnings, we don't support the suspended interrupt
                 .WithReservedBits(19, 13)
                 .WithWriteCallback((_, __) => UpdateInterrupts())
             ;
@@ -198,9 +198,9 @@ namespace Antmicro.Renode.Peripherals.I2C
                     writeCallback: (_, val) => { if(val) errorInterruptEnabled.Value = false; },
                     valueProviderCallback: _ => errorInterruptEnabled.Value)
                 .WithReservedBits(10, 4)
-                .WithTag("BB", 14, 1)
+                .WithFlag(14, name: "BB") // this is a flag to limit warnings, we don't support the byte-boundary interrupt
                 .WithReservedBits(15, 3)
-                .WithTag("SUSPENDED", 18, 1)
+                .WithFlag(18, name: "SUSPENDED") // this is a flag to limit warnings, we don't support the suspended interrupt
                 .WithReservedBits(19, 13)
                 .WithWriteCallback((_, __) => UpdateInterrupts())
             ;
@@ -250,7 +250,7 @@ namespace Antmicro.Renode.Peripherals.I2C
                 {
                     if(selectedSlave == null)
                     {
-                        this.Log(LogLevel.Warning, "No slave is currently selected");
+                        this.Log(LogLevel.Warning, "No slave is currently attached at selected address 0x{0:X}", address.Value);
                         addressNackError.Value = true;
                         errorInterruptPending.Value = true;
                         UpdateInterrupts();
@@ -271,7 +271,7 @@ namespace Antmicro.Renode.Peripherals.I2C
                 {
                     if(!TryGetByAddress((int)val, out selectedSlave))
                     {
-                        this.Log(LogLevel.Warning, "Selected a not-connected slave");
+                        this.Log(LogLevel.Warning, "Tried to select a not-connected slave at address 0x{0:X}", val);
                     }
                 })
                 .WithReservedBits(8, 24)
@@ -333,15 +333,14 @@ namespace Antmicro.Renode.Peripherals.I2C
                 return false;
             }
 
-            if(selectedSlave == null)
+            if(!masterToSlaveBuffer.Any())
             {
-                this.Log(LogLevel.Warning, "No slave is currently selected");
                 return false;
             }
 
-            if(!masterToSlaveBuffer.Any())
+            if(selectedSlave == null)
             {
-                this.Log(LogLevel.Warning, "Nothing in the buffer");
+                this.Log(LogLevel.Warning, "No slave is currently attached at selected address 0x{0:X}", address.Value);
                 return false;
             }
 

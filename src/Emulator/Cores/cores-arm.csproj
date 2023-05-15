@@ -41,15 +41,16 @@
   </Target>
   <Import Project="./cores.template.csproj" />
   <ItemGroup>
+    <Compile Include="Arm\ARMCommon.cs" />
     <Compile Include="Arm\Arm.cs" />
     <Compile Include="Arm\ArmRegisters.cs">
       <DependentUpon>ArmRegisters.tt</DependentUpon>
     </Compile>
-    <Compile Include="Arm\CortexA7.cs" />
-    <Compile Include="Arm\Timers\CortexAGenericTimer.cs" />
+    <Compile Include="Arm\ARMv7A.cs" />
+    <Compile Include="Arm\Timers\ARM_GenericTimer.cs" />
     <Compile Include="Arm\Timers\CortexAGlobalTimer.cs" />
     <Compile Include="Arm\Timers\CortexAPrivateTimer.cs" />
-    <Compile Include="Arm\GIC.cs" />
+    <Compile Include="Arm\ARM_GenericInterruptController.cs" />
     <Compile Include="Arm\SnoopControlUnit.cs" />
     <Compile Include="Debug\CPUTracer.cs" />
     <Compile Include="Debug\FunctionCallParameter.cs" />
@@ -62,6 +63,7 @@
     </None>
   </ItemGroup>
   <ItemGroup>
+    <Reference Include="System"/>
     <ProjectReference Include="..\Peripherals\Peripherals.csproj">
       <Project>{66400796-0C5B-4386-A859-50A2AC3F3DB7}</Project>
       <Name>Peripherals</Name>

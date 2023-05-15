@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -43,6 +43,24 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             generatedBitsFifo = new Queue<uint>();
             appendedData = new List<uint>();
             Reset();
+        }
+
+        public bool RequestData(out uint result)
+        {
+            if(generatedBitsFifo.TryDequeue(out result))
+            {
+                return generatedBitsFifo.Count != 0;
+            }
+            else
+            {
+                this.Log(LogLevel.Warning, "Trying to read from empty FIFO");
+                return false;
+            }
+        }
+
+        public void EdnSoftwareCommandRequestWrite(uint writeValue)
+        {
+            HandleCommandRequestWrite(writeValue);
         }
 
         public override void Reset()
@@ -102,7 +120,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 .WithTag("READ_INT_STATE", 8, 4)
                 .WithReservedBits(12, 20);
             Registers.CommandRequest.Define(this)
-                .WithValueField(0, 32, FieldMode.Write, writeCallback: (_, val) => HandleCommandRequestWrite(val), name: "CMD_REQ");
+                .WithValueField(0, 32, FieldMode.Write, writeCallback: (_, val) => HandleCommandRequestWrite((uint)val), name: "CMD_REQ");
             Registers.CommandStatus.Define(this, 0x1)
                 .WithFlag(0, out readyFlag, FieldMode.Read, name: "CMD_RDY")
                 .WithFlag(1, out requestFailedFlag, FieldMode.Read, name: "CMD_STS")

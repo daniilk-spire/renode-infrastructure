@@ -10,6 +10,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using Antmicro.Migrant;
+using Antmicro.Migrant.Hooks;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals.UART;
@@ -23,9 +24,7 @@ namespace Antmicro.Renode.Peripherals.Network
         public AtCommandModem(Machine machine)
         {
             this.machine = machine;
-            commandMethods = GetCommandMethods();
-            argumentParsers = GetArgumentParsers();
-
+            Init();
             Reset();
         }
 
@@ -78,6 +77,11 @@ namespace Antmicro.Renode.Peripherals.Network
             {
                 var command = lineBuffer.ToString();
                 lineBuffer.Clear();
+                if(command == "")
+                {
+                    this.Log(LogLevel.Debug, "Ignoring empty command");
+                    return;
+                }
                 this.Log(LogLevel.Debug, "Command received: '{0}'", command);
                 var response = HandleCommand(command);
                 if(response != null)
@@ -93,7 +97,7 @@ namespace Antmicro.Renode.Peripherals.Network
 
         public abstract void PassthroughWriteChar(byte value);
 
-        public virtual uint BaudRate => 115200;
+        public virtual uint BaudRate { get; protected set; } = 115200;
 
         public Bits StopBits => Bits.One;
 
@@ -102,6 +106,8 @@ namespace Antmicro.Renode.Peripherals.Network
         [field: Transient]
         public event Action<byte> CharReceived;
 
+        protected static readonly Encoding StringEncoding = Encoding.UTF8;
+        protected static readonly byte[] CrLfBytes = StringEncoding.GetBytes(CrLf);
         protected static readonly Response Ok = new Response(OkMessage);
         protected static readonly Response Error = new Response(ErrorMessage);
 
@@ -121,30 +127,37 @@ namespace Antmicro.Renode.Peripherals.Network
             }
         }
 
-        protected void SendString(string str)
+        protected void SendBytes(byte[] bytes)
         {
-            var stringForDisplay = str.Replace(CrLf, CrLfSymbol);
             var charReceived = CharReceived;
             if(charReceived == null)
             {
-                this.Log(LogLevel.Warning, "Wanted to send string '{0}' but nothing is connected to {1}",
-                    stringForDisplay, nameof(CharReceived));
+                this.Log(LogLevel.Warning, "Wanted to send bytes '{0}' but nothing is connected to {1}",
+                    Misc.PrettyPrintCollectionHex(bytes), nameof(CharReceived));
                 return;
             }
 
-            this.Log(LogLevel.Debug, "Sending string: '{0}'", stringForDisplay);
             lock(uartWriteLock)
             {
-                foreach(var ch in str)
+                foreach(var b in bytes)
                 {
-                    charReceived((byte)ch);
+                    charReceived(b);
                 }
             }
         }
 
+        protected void SendString(string str)
+        {
+            var strWithNewlines = str.SurroundWith(CrLf);
+            var stringForDisplay = str.SurroundWith(CrLfSymbol);
+            this.Log(LogLevel.Debug, "Sending string: '{0}'", stringForDisplay);
+            SendBytes(StringEncoding.GetBytes(strWithNewlines));
+        }
+
         protected void SendResponse(Response response)
         {
-            SendString(response.StringValue);
+            this.Log(LogLevel.Debug, "Sending response: {0}", response);
+            SendBytes(response.GetBytes());
         }
 
         // This method is intended for cases where a modem driver sends a command
@@ -236,12 +249,11 @@ namespace Antmicro.Renode.Peripherals.Network
             }
 
             var parameters = handler.GetParameters();
-            var parameterTypes = parameters.Select(p => p.ParameterType).ToArray();
             var argumentsString = parsed.Arguments;
             object[] arguments;
             try
             {
-                arguments = ParseArguments(argumentsString, parameterTypes);
+                arguments = ParseArguments(argumentsString, parameters);
             }
             catch(ArgumentException e)
             {
@@ -263,7 +275,7 @@ namespace Antmicro.Renode.Peripherals.Network
             }
             catch(ArgumentException)
             {
-                var parameterTypesString = string.Join(", ", parameterTypes.Select(t => t.FullName));
+                var parameterTypesString = string.Join(", ", parameters.Select(t => t.ParameterType.FullName));
                 var argumentTypesString = string.Join(", ", arguments.Select(a => a?.GetType()?.FullName ?? "(null)"));
                 this.Log(LogLevel.Error, "Argument type mismatch in command '{0}'. Got types [{1}], expected [{2}]",
                     command, argumentTypesString, parameterTypesString);
@@ -283,10 +295,25 @@ namespace Antmicro.Renode.Peripherals.Network
             // | - Write -> AbcReadWrite
             // which would come from AbcReadWrite being annotated with [AtCommand("AT+ABC", Read|Write)]
             // so we first flatten the types and then group by the command name.
-            var commandMethods = this.GetType().GetMethodsWithAttribute<AtCommandAttribute>()
+            // Also, if unrelated (i.e. not in an override hierarchy) methods in a base class
+            // and a subclass are both annotated with [AtCommand("AT+ABC", Read)], we want to use the
+            // implementation from the most derived class. This is done using DistinctBy(type), in order to turn
+            // AT+ABC
+            // | - Read  -> AbcReadDerivedDerived (in subclass C <: B)
+            // | - Read  -> AbcReadDerived (in subclass B <: A)
+            // | - Read  -> AbcRead (in base class A)
+            // into
+            // AT+ABC
+            // | - Read  -> AbcReadDerivedDerived (in subclass C <: B)
+            // This relies on the fact that GetMethodsWithAttribute returns methods sorted by
+            // the depth of their declaring class in the inheritance hierarchy, deepest first.
+
+            // We don't inherit the [AtCommand] attribute in order to allow "hiding" commands
+            // in subclasses by overriding them and not marking them with [AtCommand]
+            var commandMethods = this.GetType().GetMethodsWithAttribute<AtCommandAttribute>(inheritAttribute: false)
                 .SelectMany(ma => ma.Attribute.Types, (ma, type) => new { ma.Attribute.Command, type, ma.Method })
                 .GroupBy(ma => ma.Command)
-                .ToDictionary(g => g.Key, g => g.ToDictionary(ma => ma.type, ma => ma.Method));
+                .ToDictionary(g => g.Key, g => g.DistinctBy(h => h.type).ToDictionary(ma => ma.type, ma => ma.Method));
 
             // Verify that all command methods return Response
             foreach(var typeMethod in commandMethods.Values.SelectMany(m => m))
@@ -302,13 +329,24 @@ namespace Antmicro.Renode.Peripherals.Network
             return commandMethods;
         }
 
+        [PostDeserialization]
+        private void Init()
+        {
+            commandMethods = GetCommandMethods();
+            argumentParsers = GetArgumentParsers();
+            defaultTestCommandMethodInfo = typeof(AtCommandModem).GetMethod(nameof(DefaultTestCommand), BindingFlags.Instance | BindingFlags.NonPublic);
+        }
+
         private bool echoEnabled;
         private StringBuilder lineBuffer;
 
-        private readonly Dictionary<string, Dictionary<CommandType, MethodInfo>> commandMethods;
-        private readonly Dictionary<Type, Func<string, object>> argumentParsers;
-        private readonly MethodInfo defaultTestCommandMethodInfo = typeof(AtCommandModem)
-            .GetMethod(nameof(DefaultTestCommand), BindingFlags.Instance | BindingFlags.NonPublic);
+        [Transient]
+        private Dictionary<string, Dictionary<CommandType, MethodInfo>> commandMethods;
+        [Transient]
+        private Dictionary<Type, Func<string, object>> argumentParsers;
+        [Transient]
+        private MethodInfo defaultTestCommandMethodInfo;
+
         private readonly object uartWriteLock = new object();
 
         [AttributeUsage(AttributeTargets.Method)]
@@ -332,18 +370,50 @@ namespace Antmicro.Renode.Peripherals.Network
 
         protected class Response
         {
-            public Response(string status, params string[] parameters) : this(status, "", parameters)
+            public Response(string status, params string[] parameters) : this(status, "", parameters, null)
             {
             }
 
             public Response WithParameters(params string[] parameters)
             {
-                return new Response(Status, Trailer, parameters);
+                return new Response(Status, Trailer, parameters, null);
+            }
+
+            public Response WithParameters(byte[] parameters)
+            {
+                return new Response(Status, Trailer, null, parameters);
             }
 
             public Response WithTrailer(string trailer)
             {
-                return new Response(Status, trailer, Parameters);
+                return new Response(Status, trailer, Parameters, BinaryBody);
+            }
+
+            public override string ToString()
+            {
+                string bodyRepresentation;
+                if(Parameters != null)
+                {
+                    bodyRepresentation = string.Join(", ", Parameters.Select(p => p.SurroundWith("'")));
+                    bodyRepresentation = $"[{bodyRepresentation}]";
+                }
+                else
+                {
+                    bodyRepresentation = Misc.PrettyPrintCollectionHex(BinaryBody);
+                }
+
+                var result = $"Body: {bodyRepresentation}; Status: {Status}";
+                if(Trailer.Length > 0)
+                {
+                    result += $"; Trailer: {Trailer}";
+                }
+                return result;
+            }
+
+            // Get the binary representation formatted as a modem would send it
+            public byte[] GetBytes()
+            {
+                return bytes;
             }
 
             // The status line is usually "OK" or "ERROR"
@@ -351,24 +421,46 @@ namespace Antmicro.Renode.Peripherals.Network
             // The parameters are the actual useful data returned by a command, for example
             // the current value of a parameter in the case of a Read command
             public string[] Parameters { get; }
+            // Alternatively to parameters, a binary body can be provided. It is placed where
+            // the parameters would be and surrounded with CrLf
+            public byte[] BinaryBody { get; }
             // The trailer can be thought of as an immediately-sent URC: it is sent after
-            // the status line
+            // the status line.
             public string Trailer { get; }
-            // The string representation formatted as a modem would send it
-            public string StringValue { get; }
 
-            private Response(string status, string trailer, string[] parameters)
+            private Response(string status, string trailer, string[] parameters, byte[] binaryBody)
             {
+                // We want exactly one of Parameters or BinaryBody. If neither is provided or both
+                // are, throw an exception.
+                if((parameters != null) == (binaryBody != null))
+                {
+                    throw new InvalidOperationException("Either parameters xor a binary body must be provided");
+                }
+
                 Status = status;
                 Trailer = trailer;
                 Parameters = parameters;
+                BinaryBody = binaryBody;
 
-                var parametersContent = string.Join(CrLf, Parameters);
-                var parametersPart = parametersContent.Length > 0 ? parametersContent.SurroundWith(CrLf) : "";
+                byte[] bodyContent;
+                if(Parameters != null)
+                {
+                    var parametersContent = string.Join(CrLf, Parameters);
+                    bodyContent = StringEncoding.GetBytes(parametersContent);
+                }
+                else
+                {
+                    bodyContent = BinaryBody;
+                }
+
+                var bodyBytes = CrLfBytes.Concat(bodyContent).Concat(CrLfBytes);
                 var statusPart = Status.SurroundWith(CrLf);
-                var trailerPart = Trailer.Length > 0 ? Trailer.SurroundWith(CrLf) : "";
-                StringValue = parametersPart + statusPart + trailerPart;
+                var statusBytes = StringEncoding.GetBytes(statusPart);
+                var trailerBytes = StringEncoding.GetBytes(Trailer.SurroundWith(CrLf));
+                bytes = bodyBytes.Concat(statusBytes).Concat(trailerBytes).ToArray();
             }
+
+            private readonly byte[] bytes;
         }
 
         [Flags]

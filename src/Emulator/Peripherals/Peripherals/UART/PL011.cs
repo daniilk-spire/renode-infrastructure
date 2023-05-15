@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -66,7 +66,7 @@ namespace Antmicro.Renode.Peripherals.UART
             get
             {
                 var divisor = 16 * (integerBaudRate.Value + (fractionalBaudRate.Value / 64));
-                return (divisor > 0) ? (UARTClockFrequency / divisor) : 0;
+                return (divisor > 0) ? (UARTClockFrequency / (uint)divisor) : 0;
             }
         }
 
@@ -141,7 +141,7 @@ namespace Antmicro.Renode.Peripherals.UART
             Registers.Data.Define(this)
                 .WithValueField(0, 8, name: "DATA - Receive (read) / Transmit (write) data character",
                         valueProviderCallback: _ => ReadDataRegister(),
-                        writeCallback: (_, newValue) => WriteDataRegister(newValue))
+                        writeCallback: (_, newValue) => WriteDataRegister((uint)newValue))
                 .WithTaggedFlag("FE - Framing error", 8)
                 .WithTaggedFlag("PE - Parity error", 9)
                 .WithTaggedFlag("BE - Break error", 10)
@@ -150,7 +150,18 @@ namespace Antmicro.Renode.Peripherals.UART
                 ;
 
             Registers.Control.Define(this, 0x300)
-                .WithFlag(0, out uartEnable, name: "UARTEN - UART enable")
+                .WithFlag(0, out uartEnable, name: "UARTEN - UART enable",
+                    changeCallback: (_, value) =>
+                    {
+                        if(value)
+                        {
+                            // Documentation states that the Transmit interrupt should be only set upon
+                            // crossing the threshold and enabling/disabling FIFO, but some software
+                            // requires it to be set after enabling UART
+                            interruptRawStatuses[(int)Interrupts.Transmit] = true;
+                            UpdateInterrupts();
+                        }
+                    })
                 .WithTaggedFlag("SIREN - SIR enable", 1)
                 .WithTaggedFlag("SIRLP - IrDA SIR low power mode", 2)
                 // These 4 bits can be written/read by software but there's no logic associated.
@@ -309,6 +320,8 @@ namespace Antmicro.Renode.Peripherals.UART
             {
                 receiveFifoSize = 1;
                 this.Log(LogLevel.Debug, "FIFO buffers disabled.");
+                interruptRawStatuses[(int)Interrupts.Transmit] = true;
+                UpdateInterrupts();
             }
             UpdateReceiveInterruptTriggerPoint();
         }

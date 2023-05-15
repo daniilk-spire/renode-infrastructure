@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2018 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -78,6 +78,11 @@ namespace Antmicro.Renode.Core
             return contexts.Select(x => x.GetSurrogate(type)).FirstOrDefault(x => x != null);
         }
 
+        public object GetSurrogate(string typeName)
+        {
+            return contexts.Select(x => x.GetSurrogate(typeName)).FirstOrDefault(x => x != null);
+        }
+
         protected ObjectCreator()
         {
             contexts = new Stack<Context>();
@@ -102,7 +107,7 @@ namespace Antmicro.Renode.Core
                 objectCreator = creator;
                 surrogates = new Dictionary<Type, object>();
             }
-            
+
             public void RegisterSurrogate(Type type, object obj)
             {
                 surrogates.Add(type, obj);
@@ -113,6 +118,11 @@ namespace Antmicro.Renode.Core
                 object result;
                 surrogates.TryGetValue(type, out result);
                 return result;
+            }
+
+            public object GetSurrogate(string typeName)
+            {
+                return surrogates.FirstOrDefault(x => x.Key.FullName.Contains(typeName)).Value;
             }
 
             public void Close()

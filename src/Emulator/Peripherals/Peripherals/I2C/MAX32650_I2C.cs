@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 //
 //  This file is licensed under the MIT License.
 //  Full license text is available in 'licenses/MIT.txt'.
@@ -131,6 +131,8 @@ namespace Antmicro.Renode.Peripherals.I2C
                             txQueue.Clear();
                         }
                     }
+
+                    TryReadingToBuffer();
                     break;
 
                 case States.WaitForAddress:
@@ -145,6 +147,12 @@ namespace Antmicro.Renode.Peripherals.I2C
                         state = States.Idle;
                         txQueue.Clear();
                     }
+
+                    TryReadingToBuffer();
+                    break;
+
+                case States.ReadingFromBuffer:
+                    this.Log(LogLevel.Warning, "Writing data to FIFO while in reading state, ignoring incoming data.");
                     break;
 
                 default:
@@ -163,50 +171,49 @@ namespace Antmicro.Renode.Peripherals.I2C
             }
 
             byte result = DefaultReturnValue;
-
-            switch(state)
+            if(rxQueue.TryDequeue(out var data))
             {
-                case States.Reading:
-                    if(rxQueue.Count > 0)
-                    {
-                        this.Log(LogLevel.Warning, "Receiving new data with non-empty RX queue");
-                    }
-
-                    var receivedBytes = CurrentSlave.Read(bytesToReceive);
-                    if(receivedBytes.Length != bytesToReceive)
-                    {
-                        this.Log(LogLevel.Warning, "Requested {0} bytes, but received {1}", bytesToReceive, rxQueue.Count);
-                    }
-
-                    foreach(var value in receivedBytes)
-                    {
-                        rxQueue.Enqueue(value);
-                    }
-
-                    state = States.ReadingFromBuffer;
-                    goto case States.ReadingFromBuffer;
-
-                case States.ReadingFromBuffer:
-                    if(rxQueue.TryDequeue(out var data))
-                    {
-                        result = data;
-                        break;
-                    }
-                    interruptDonePending.Value = true;
-                    break;
-
-                default:
-                    throw new Exception($"Unhandled state in HandleReadByte: {state}");
+                result = data;
+            }
+            else
+            {
+                interruptDonePending.Value = true;
             }
 
             UpdateInterrupts();
             return result;
         }
 
+        private void TryReadingToBuffer()
+        {
+            if(state != States.Reading)
+            {
+                return;
+            }
+
+            if(rxQueue.Count > 0)
+            {
+                this.Log(LogLevel.Warning, "Receiving new data with non-empty RX queue");
+            }
+
+            var receivedBytes = CurrentSlave.Read(bytesToReceive);
+            if(receivedBytes.Length != bytesToReceive)
+            {
+                this.Log(LogLevel.Warning, "Requested {0} bytes, but received {1}", bytesToReceive, rxQueue.Count);
+            }
+
+            foreach(var value in receivedBytes)
+            {
+                rxQueue.Enqueue(value);
+            }
+
+            state = States.ReadingFromBuffer;
+        }
+
         private void UpdateInterrupts()
         {
-            interruptRxThresholdPending.Value = rxQueue.Count >= rxThreshold.Value;
-            interruptTxThresholdPending.Value = txQueue.Count <= txThreshold.Value;
+            interruptRxThresholdPending.Value = rxQueue.Count >= (int)rxThreshold.Value;
+            interruptTxThresholdPending.Value = txQueue.Count <= (int)txThreshold.Value;
 
             var pending = false;
             pending |= interruptTimeoutEnabled.Value && interruptTimeoutPending.Value;
@@ -221,6 +228,21 @@ namespace Antmicro.Renode.Peripherals.I2C
         {
             var registerMap = new Dictionary<long, DoubleWordRegister>()
             {
+                {(long)Registers.Status, new DoubleWordRegister(this)
+                    .WithFlag(0, FieldMode.Read, name: "STAT.busy",
+                        valueProviderCallback: _ => state != States.Idle)
+                    .WithFlag(1, FieldMode.Read, name: "STAT.rxe",
+                        valueProviderCallback: _ => rxQueue.Count == 0)
+                    .WithFlag(2, FieldMode.Read, name: "STAT.rxf",
+                        valueProviderCallback: _ => false)
+                    .WithFlag(3, FieldMode.Read, name: "STAT.txe",
+                        valueProviderCallback: _ => true)
+                    .WithFlag(4, FieldMode.Read, name: "STAT.txf",
+                        valueProviderCallback: _ => false)
+                    .WithFlag(5, FieldMode.Read, name: "STAT.chmd",
+                        valueProviderCallback: _ => state != States.Idle)
+                    .WithReservedBits(6, 26)
+                },
                 {(long)Registers.Control0, new DoubleWordRegister(this)
                     .WithFlag(0, name: "CTRL0.i2cen",
                         changeCallback: (_, value) =>
@@ -271,7 +293,8 @@ namespace Antmicro.Renode.Peripherals.I2C
                     .WithTaggedFlag("INT_FL0.dnreri", 12)
                     .WithTaggedFlag("INT_FL0.strteri", 13)
                     .WithTaggedFlag("INT_FL0.stoperi", 14)
-                    .WithTaggedFlag("INT_FL0.txloi", 15)
+                    // We are using flag instead of tagged flag to hush down unnecessary logs
+                    .WithFlag(15, FieldMode.WriteOneToClear, name: "INT_FL0.txloi")
                     .WithReservedBits(16, 16)
                     .WithChangeCallback((_, __) => UpdateInterrupts())
                 },
@@ -334,10 +357,6 @@ namespace Antmicro.Renode.Peripherals.I2C
                             {
                                 state = States.Ready;
                                 HandleTransaction();
-                            }
-                            else
-                            {
-                                this.Log(LogLevel.Warning, "Tried to START new transaction before the previous one has finished - ignoring the operation");
                             }
                         })
                     .WithFlag(1, FieldMode.Read | FieldMode.WriteOneToClear, name: "MSTR_MODE.restart",

@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -49,7 +49,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
             registers = new ByteRegisterCollection(this, BuildRegisterMap());
         }
 
-        public void FeedSamplesFromRESD(ReadFilePath filePath, uint channelId = 0, ulong startTimestamp = 0, ulong sampleOffsetTime = 0)
+        public void FeedSamplesFromRESD(ReadFilePath filePath, uint channelId = 0, ulong startTimestamp = 0, long sampleOffsetTime = 0)
         {
             lock(feederThreadLock)
             {
@@ -78,6 +78,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
                         circularFifo.EnqueueFrame(defaultMeasurements);
                     }
                 }, sampleOffsetTime: sampleOffsetTime);
+                this.Log(LogLevel.Info, "Started feeding samples from RESD file at {0}Hz", CalculateCurrentFrequency());
             }
         }
 
@@ -102,7 +103,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
             registers.Reset();
             chosenRegister = null;
             state = null;
-            circularFifo.Clear();
+            circularFifo.Reset();
             previousFifoTresholdReached = false;
             staleConfiguration = true;
 
@@ -252,6 +253,8 @@ namespace Antmicro.Renode.Peripherals.Sensors
             }
         }
 
+        public event Action FifoFlushed;
+
         private void UpdateStatus()
         {
             statusFifoFull.Value |= FifoThresholdReached && (!fifoAssertThresholdOnce.Value || (previousFifoTresholdReached == FifoThresholdReached));
@@ -293,15 +296,15 @@ namespace Antmicro.Renode.Peripherals.Sensors
             {
                 var channelId = channel + 1;
                 var nonMatchingMetadata = new List<String>();
-                if(currentSample.ConfigLedAExposure[channelId].HasValue && CalculateExposure(measurementLEDACurrent[channel].Value, ledRange[channel].Value, out var ledAExposure) != currentSample.ConfigLedAExposure[channelId])
+                if(currentSample.ConfigLedAExposure[channelId].HasValue && CalculateExposure((uint)measurementLEDACurrent[channel].Value, (uint)ledRange[channel].Value, out var ledAExposure) != currentSample.ConfigLedAExposure[channelId])
                 {
                     nonMatchingMetadata.Add($"LED A exposure (expected: {currentSample.ConfigLedAExposure[channelId]}, got: {ledAExposure})");
                 }
-                if(currentSample.ConfigLedBExposure[channelId].HasValue && CalculateExposure(measurementLEDBCurrent[channel].Value, ledRange[channel].Value, out var ledBExposure) != currentSample.ConfigLedBExposure[channelId])
+                if(currentSample.ConfigLedBExposure[channelId].HasValue && CalculateExposure((uint)measurementLEDBCurrent[channel].Value, (uint)ledRange[channel].Value, out var ledBExposure) != currentSample.ConfigLedBExposure[channelId])
                 {
                     nonMatchingMetadata.Add($"LED B exposure (expected: {currentSample.ConfigLedBExposure[channelId]}, got: {ledBExposure})");
                 }
-                if(currentSample.ConfigLedCExposure[channelId].HasValue && CalculateExposure(measurementLEDCCurrent[channel].Value, ledRange[channel].Value, out var ledCExposure) != currentSample.ConfigLedCExposure[channelId])
+                if(currentSample.ConfigLedCExposure[channelId].HasValue && CalculateExposure((uint)measurementLEDCCurrent[channel].Value, (uint)ledRange[channel].Value, out var ledCExposure) != currentSample.ConfigLedCExposure[channelId])
                 {
                     nonMatchingMetadata.Add($"LED C exposure (expected: {currentSample.ConfigLedCExposure[channelId]}, got: {ledCExposure})");
                 }
@@ -502,6 +505,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
 
                                 statusFifoFull.Value = false;
                                 UpdateInterrupts();
+                                FifoFlushed?.Invoke();
                             }
                         })
                     .WithReservedBits(5, 3)
@@ -510,9 +514,14 @@ namespace Antmicro.Renode.Peripherals.Sensors
                     .WithFlag(0, name: "SYSTEM_CONF1.reset",
                         valueProviderCallback: _ => false,
                         writeCallback: (_, value) => { if(value) Reset(); })
+                    .WithFlag(1, name: "SYSTEM_CONF1.shdn",
+                        // While completely disabling clocks used for feeding samples to FIFO
+                        // would be more in line with what actual software is doing, disabling writes
+                        // to FIFO is easier to implement while also being agnostic to samples source
+                        valueProviderCallback: _ => !circularFifo.Enabled,
+                        writeCallback: (_, value) => circularFifo.Enabled = !value)
                     // Using Flag instead of TaggedFlag for persistancy of data
                     // written by software
-                    .WithFlag(1, name: "SYSTEM_CONF1.shdn")
                     .WithFlag(2, name: "SYSTEM_CONF1.ppg1_pwrdn")
                     .WithFlag(3, name: "SYSTEM_CONF1.ppg2_pwrdn")
                     .WithValueField(4, 2, name: "SYSTEM_CONF1.sync_mode")
@@ -720,7 +729,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
                 if(measurementEnabled.Any(x => x))
                 {
                     var freq = CalculateCurrentFrequency();
-                    this.Log(LogLevel.Debug, "Starting the default sample feeding at {0}Hz", freq);
+                    this.Log(LogLevel.Info, "Starting the default sample feeding at {0}Hz", freq);
 
                     Action feedSample = () =>
                     {
@@ -783,7 +792,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
             var clockBaseFrequency = clockSelect.Value
                 ? 32768u
                 : 32000u;
-            return clockBaseFrequency / ((clockDividerHigh.Value << 8) + clockDividerLow.Value);
+            return (uint)(clockBaseFrequency / ((clockDividerHigh.Value << 8) + clockDividerLow.Value));
         }
 
         private IEnumerable<Channel> ActiveChannels =>
@@ -925,13 +934,12 @@ namespace Antmicro.Renode.Peripherals.Sensors
 
             public override bool Skip(SafeBinaryReader reader, int count)
             {
-                for(var i = 0; i < count; ++i)
+                for(var i = 0; i < count && !reader.EOF; ++i)
                 {
                     var frameLength = reader.ReadByte();
                     reader.SkipBytes(frameLength * 4);
                 }
-
-                return true;
+                return !reader.EOF;
             }
 
             private const int MaxChannels = 9;
@@ -943,6 +951,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
             {
                 samples = new Queue<AFESample>();
                 this.parent = parent;
+                Reset();
             }
 
             public void EnqueueFrame(AFESampleFrame frame)
@@ -978,6 +987,11 @@ namespace Antmicro.Renode.Peripherals.Sensors
 
             public void EnqueueSample(AFESample sample)
             {
+                if(!Enabled)
+                {
+                    return;
+                }
+
                 if(samples.Count == MaximumFIFOCount)
                 {
                     parent.Log(LogLevel.Warning, "Sample FIFO overrun");
@@ -1017,6 +1031,13 @@ namespace Antmicro.Renode.Peripherals.Sensors
                 samples.Clear();
             }
 
+            public void Reset()
+            {
+                Enabled = true;
+                Rollover = false;
+                Clear();
+            }
+
             private Channel? SampleSourceToChannel(SampleSource ss)
             {
                 switch(ss)
@@ -1044,6 +1065,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
                 }
             }
 
+            public bool Enabled { get; set; }
             public bool Rollover { get; set; }
             public uint Count => (uint)samples.Count;
 

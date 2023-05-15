@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2018 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -18,16 +18,25 @@ namespace Antmicro.Renode.TAPHelper
     {
         public static string GetTAPHelper()
         {
-			var extensionsAssemblyPath = TemporaryFilesManager.Instance.GetTemporaryFile();
             var generatedFileName = TemporaryFilesManager.Instance.GetTemporaryFile();
             var dirName = Path.GetDirectoryName(generatedFileName);
             var filName = Path.GetFileName(generatedFileName);
 
+            var extensionsAssemblySourcePath = Assembly.GetExecutingAssembly().CodeBase.Substring(7);
+            var executingDir = Path.GetDirectoryName(extensionsAssemblySourcePath);
+            var emulatorAssemblySourcePath = Path.Combine(executingDir, "Emulator.dll");
+
+            var extensionsAssemblyPath = Path.Combine(TemporaryFilesManager.Instance.EmulatorTemporaryPath, "Extensions.dll");
+            var emulatorAssemblyPath = Path.Combine(TemporaryFilesManager.Instance.EmulatorTemporaryPath, "Emulator.dll");
+
             // Copy Extensions.dll to temp
-            FileCopier.Copy(Assembly.GetExecutingAssembly().CodeBase.Substring(7), extensionsAssemblyPath, true);
+            FileCopier.Copy(extensionsAssemblySourcePath, extensionsAssemblyPath, true);
+
+            // Copy Emulator.dll (it has LibC wrapper we need)
+            FileCopier.Copy(emulatorAssemblySourcePath, emulatorAssemblyPath, true);
 
             // Generate binary
-			GenerateTAPHelper(dirName, filName, extensionsAssemblyPath);
+            GenerateTAPHelper(dirName, filName, extensionsAssemblyPath);
 
             return generatedFileName;
         }
@@ -45,7 +54,7 @@ namespace Antmicro.Renode.TAPHelper
             var typeBuilder = moduleBuilder.DefineType("TAPHelper", TypeAttributes.Public|TypeAttributes.Class);
             var mainMethodBuilder = typeBuilder.DefineMethod("Main", MethodAttributes.Public | MethodAttributes.Static, typeof(int), new Type[] { typeof(string[]) });
             
-			//
+            //
             // Main method
             //
             var generator = mainMethodBuilder.GetILGenerator();
@@ -53,16 +62,16 @@ namespace Antmicro.Renode.TAPHelper
             var setReturnFail = generator.DefineLabel();
             var freeMemoryAndFinish = generator.DefineLabel();
 
-			// load the proper assembly
-			generator.Emit(OpCodes.Ldtoken, typeof(Func<IntPtr, bool, int>));
-			generator.Emit(OpCodes.Call, typeof(Type).GetMethod("GetTypeFromHandle"));
-			generator.Emit(OpCodes.Ldstr, extensionsAssemblyPath);
-			generator.Emit(OpCodes.Call, typeof(Assembly).GetMethod("LoadFrom", new [] { typeof(string) }));
-			generator.Emit(OpCodes.Ldstr, "Antmicro.Renode.TAPHelper.LibC");
-			generator.Emit(OpCodes.Callvirt, typeof(Assembly).GetMethod("GetType", new [] { typeof(string) }));
-			generator.Emit(OpCodes.Ldstr, "OpenTAP");
-			generator.Emit(OpCodes.Call, typeof(Delegate).GetMethod("CreateDelegate", new [] { typeof(Type), typeof(Type), typeof(string) }));
-			generator.Emit(OpCodes.Castclass, typeof(Func<IntPtr, bool, int>));
+            // load the proper assembly
+            generator.Emit(OpCodes.Ldtoken, typeof(Func<IntPtr, bool, int>));
+            generator.Emit(OpCodes.Call, typeof(Type).GetMethod("GetTypeFromHandle"));
+            generator.Emit(OpCodes.Ldstr, extensionsAssemblyPath);
+            generator.Emit(OpCodes.Call, typeof(Assembly).GetMethod("LoadFrom", new [] { typeof(string) }));
+            generator.Emit(OpCodes.Ldstr, "Antmicro.Renode.TAPHelper.TAPTools");
+            generator.Emit(OpCodes.Callvirt, typeof(Assembly).GetMethod("GetType", new [] { typeof(string) }));
+            generator.Emit(OpCodes.Ldstr, "OpenTAP");
+            generator.Emit(OpCodes.Call, typeof(Delegate).GetMethod("CreateDelegate", new [] { typeof(Type), typeof(Type), typeof(string) }));
+            generator.Emit(OpCodes.Castclass, typeof(Func<IntPtr, bool, int>));
 
             // push device name on stack
             generator.Emit(OpCodes.Ldarg_0);
@@ -79,7 +88,7 @@ namespace Antmicro.Renode.TAPHelper
             generator.Emit(OpCodes.Call, typeof(bool).GetMethod("Parse", new [] { typeof(string) }));
 
             // call OpenTAP method
-			generator.Emit(OpCodes.Callvirt, typeof(Func<IntPtr, bool, int>).GetMethod("Invoke", new [] { typeof(IntPtr), typeof(bool) }));
+            generator.Emit(OpCodes.Callvirt, typeof(Func<IntPtr, bool, int>).GetMethod("Invoke", new [] { typeof(IntPtr), typeof(bool) }));
 
             generator.Emit(OpCodes.Ldc_I4, 0);
             generator.Emit(OpCodes.Blt, setReturnFail);
@@ -105,7 +114,7 @@ namespace Antmicro.Renode.TAPHelper
             generator.MarkLabel(freeMemoryAndFinish);
             generator.Emit(OpCodes.Ldloc, intptrLocale);
             generator.Emit(OpCodes.Call, typeof(Marshal).GetMethod("FreeCoTaskMem"));
-			
+            
             generator.Emit(OpCodes.Ret);
 
             typeBuilder.CreateType();

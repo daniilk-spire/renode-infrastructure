@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2018 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -30,12 +30,12 @@ namespace Antmicro.Renode.UnitTests
             Assert.Catch<ArgumentException>(() => localRegister.DefineValueField(0, -1));
         }
 
-
         [Test]
         public void ShouldNotExceedRegisterSize()
         {
             var registersAndPositions = new Dictionary<PeripheralRegister, int>
             {
+                { new QuadWordRegister(null), 63 },
                 { new DoubleWordRegister(null), 31 },
                 { new WordRegister(null), 15 },
                 { new ByteRegister(null), 7 }
@@ -50,7 +50,7 @@ namespace Antmicro.Renode.UnitTests
         [Test]
         public void ShouldNotAllowIntersectingFields()
         {
-            var localRegister = new DoubleWordRegister(null);
+            var localRegister = new QuadWordRegister(null);
             localRegister.DefineValueField(1, 5);
             Assert.Catch<ArgumentException>(() => localRegister.DefineValueField(0, 2));
         }
@@ -79,6 +79,16 @@ namespace Antmicro.Renode.UnitTests
         }
 
         [Test]
+        public void ShouldRead64BitWideEnum()
+        {
+            var localRegister = new QuadWordRegister(null);
+            var localEnumField = localRegister.DefineEnumField<SixtyFourBitEnum>(0, 64);
+
+            localRegister.Write(0, ulong.MaxValue);
+            Assert.AreEqual(SixtyFourBitEnum.B, localEnumField.Value);
+        }
+
+        [Test]
         public void ShouldReadValueField()
         {
             register.Write(0, 88); //1011000
@@ -97,6 +107,16 @@ namespace Antmicro.Renode.UnitTests
         {
             enumRWField.Value = TwoBitEnum.D;
             Assert.AreEqual((uint)TwoBitEnum.D | RegisterResetValue, register.Read());
+        }
+
+        [Test]
+        public void ShouldWrite64BitWideEnum()
+        {
+            var localRegister = new QuadWordRegister(null);
+            var localEnumField = localRegister.DefineEnumField<SixtyFourBitEnum>(0, 64);
+
+            localEnumField.Value = SixtyFourBitEnum.A;
+            Assert.AreEqual((ulong)SixtyFourBitEnum.A, localRegister.Read());
         }
 
         [Test]
@@ -169,7 +189,7 @@ namespace Antmicro.Renode.UnitTests
 
             Assert.IsTrue(oldBoolValue == newBoolValue);
             Assert.IsTrue(oldEnumValue == newEnumValue);
-            Assert.IsTrue(oldUintValue == newUintValue);
+            Assert.IsTrue(oldNumberValue == newNumberValue);
         }
 
         [Test]
@@ -194,8 +214,8 @@ namespace Antmicro.Renode.UnitTests
 
             Assert.IsTrue(oldBoolValue == newBoolValue);
             Assert.IsTrue(oldEnumValue == TwoBitEnum.D && newEnumValue == TwoBitEnum.B);
-            Assert.IsTrue(oldUintValue == 13);
-            Assert.IsTrue(newUintValue == 10);
+            Assert.IsTrue(oldNumberValue == 13);
+            Assert.IsTrue(newNumberValue == 10);
         }
 
         [Test]
@@ -248,17 +268,25 @@ namespace Antmicro.Renode.UnitTests
         }
 
         [Test]
+        public void ShouldHandle64BitWideRegistersProperly()
+        {
+            ulong test = 0;
+            new QuadWordRegister(null, 0).WithValueField(0, 64, writeCallback: (oldValue, newValue) => test = newValue).Write(0x0, 0xDEADBEEF01234567UL);
+            Assert.AreEqual(0xDEADBEEF01234567UL, test);
+        }
+
+        [Test]
         public void ShouldHandle32BitWideRegistersProperly()
         {
             uint test = 0;
-            new DoubleWordRegister(null, 0).WithValueField(0, 32, writeCallback: (oldValue, newValue) => test = newValue).Write(0x0, 0xDEADBEEF);
+            new DoubleWordRegister(null, 0).WithValueField(0, 32, writeCallback: (oldValue, newValue) => test = (uint)newValue).Write(0x0, 0xDEADBEEF);
             Assert.AreEqual(0xDEADBEEF, test);
         }
 
         [SetUp]
         public void SetUp()
         {
-            register = new DoubleWordRegister(null, RegisterResetValue);
+            register = new QuadWordRegister(null, RegisterResetValue);
             enumRWField = register.DefineEnumField<TwoBitEnum>(0, 2);
             flagRWField = register.DefineFlagField(2);
             valueRWField = register.DefineValueField(3, 4);
@@ -288,13 +316,13 @@ namespace Antmicro.Renode.UnitTests
             newBoolValue = false;
             oldEnumValue = TwoBitEnum.A;
             newEnumValue = TwoBitEnum.A;
-            oldUintValue = 0;
-            newUintValue = 0;
+            oldNumberValue = 0;
+            newNumberValue = 0;
             oldGlobalValue = 0;
             newGlobalValue = 0;
         }
 
-        private void GlobalCallback(uint oldValue, uint newValue)
+        private void GlobalCallback(ulong oldValue, ulong newValue)
         {
             globalCallbacks++;
             oldGlobalValue = oldValue;
@@ -315,14 +343,14 @@ namespace Antmicro.Renode.UnitTests
             newBoolValue = newValue;
         }
 
-        private void NumberCallback(uint oldValue, uint newValue)
+        private void NumberCallback(ulong oldValue, ulong newValue)
         {
             numberCallbacks++;
-            oldUintValue = oldValue;
-            newUintValue = newValue;
+            oldNumberValue = oldValue;
+            newNumberValue = newValue;
         }
 
-        private uint ModifyingValueCallback(uint currentValue)
+        private ulong ModifyingValueCallback(ulong currentValue)
         {
             if(enableValueProviders)
             {
@@ -394,7 +422,7 @@ namespace Antmicro.Renode.UnitTests
           1A      |   Enum rw w/changing r callback
           1B      |
         */
-        private DoubleWordRegister register;
+        private QuadWordRegister register;
 
         private int enumCallbacks;
         private int boolCallbacks;
@@ -406,10 +434,10 @@ namespace Antmicro.Renode.UnitTests
         private TwoBitEnum newEnumValue;
         private bool oldBoolValue;
         private bool newBoolValue;
-        private uint oldUintValue;
-        private uint newUintValue;
-        private uint oldGlobalValue;
-        private uint newGlobalValue;
+        private ulong oldNumberValue;
+        private ulong newNumberValue;
+        private ulong oldGlobalValue;
+        private ulong newGlobalValue;
 
         private bool enableValueProviders;
 
@@ -424,7 +452,7 @@ namespace Antmicro.Renode.UnitTests
         private IFlagRegisterField flagWField;
         private IFlagRegisterField flagRField;
 
-        private const uint RegisterResetValue = 0x3780u;
+        private const ulong RegisterResetValue = 0x3780u;
 
         private enum TwoBitEnum
         {
@@ -432,6 +460,11 @@ namespace Antmicro.Renode.UnitTests
             B = 1,
             D = 3
         }
+
+        private enum SixtyFourBitEnum : ulong
+        {
+            A = 0x0123456789123456,
+            B = 0xFFFFFFFFFFFFFFFF
+        }
     }
 }
-

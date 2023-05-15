@@ -5,16 +5,17 @@
 // Full license text is available in 'licenses/MIT.txt'.
 //
 using System;
+using System.IO;
+using Antmicro.Renode.Logging;
 
 namespace Antmicro.Renode.Utilities.RESD
 {
     public class SamplesData<T> where T : RESDSample, new()
     {
-        public SamplesData(SafeBinaryReader reader, long samplesBorderOffset)
+        public SamplesData(SafeBinaryReader reader)
         {
             this.reader = reader;
             this.currentSample = new T();
-            this.samplesBorderOffset = samplesBorderOffset;
 
             currentSample.TryReadMetadata(reader);
         }
@@ -23,16 +24,15 @@ namespace Antmicro.Renode.Utilities.RESD
         {
             if(!sampleReady)
             {
-                currentSample.TryReadFromStream(reader);
+                sampleReady = currentSample.TryReadFromStream(reader);
             }
             return currentSample;
         }
 
         public bool Move(int count)
         {
-            if(reader.BaseStream.Position >= samplesBorderOffset)
+            if(reader.EOF)
             {
-                // end of samples data
                 return false;
             }
 
@@ -44,11 +44,14 @@ namespace Antmicro.Renode.Utilities.RESD
 
             if(count > 0)
             {
-                sampleReady = false;
-                if(!currentSample.Skip(reader, count))
+                // as GetCurrentSample lazily reads next sample, we have to
+                // take it under account when skipping samples
+                if(!currentSample.Skip(reader, count - (sampleReady ? 1 : 0)))
                 {
+                    reader.SeekToEnd();
                     return false;
                 }
+                sampleReady = false;
             }
 
             return !reader.EOF;
@@ -57,6 +60,5 @@ namespace Antmicro.Renode.Utilities.RESD
         private bool sampleReady;
         private T currentSample;
         private readonly SafeBinaryReader reader;
-        private readonly long samplesBorderOffset;
     }
 }

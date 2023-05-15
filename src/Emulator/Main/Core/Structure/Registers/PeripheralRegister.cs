@@ -15,6 +15,109 @@ using Antmicro.Renode.Logging;
 namespace Antmicro.Renode.Core.Structure.Registers
 {
     /// <summary>
+    /// 64 bit <see cref="PeripheralRegister"/>.
+    /// </summary>
+    public sealed class QuadWordRegister : PeripheralRegister
+    {
+        /// <summary>
+        /// Creates a register with one field, serving a purpose of read and write register.
+        /// </summary>
+        /// <returns>A new register.</returns>
+        /// <param name="resetValue">Reset value.</param>
+        /// <param name="name">Ignored parameter, for convenience. Treat it as a comment.</param>
+        public static QuadWordRegister CreateRWRegister(ulong resetValue = 0, string name = null, bool softResettable = true)
+        {
+            //null because parent is used for logging purposes only - this will never happen in this case.
+            var register = new QuadWordRegister(null, resetValue, softResettable);
+            register.DefineValueField(0, register.MaxRegisterLength);
+            return register;
+        }
+
+        public QuadWordRegister(IPeripheral parent, ulong resetValue = 0, bool softResettable = true) : base(parent, resetValue, softResettable, 64)
+        {
+        }
+
+        /// <summary>
+        /// Retrieves the current value of readable fields. All FieldMode values are interpreted and callbacks are executed where applicable.
+        /// </summary>
+        public ulong Read()
+        {
+            return ReadInner();
+        }
+
+        /// <summary>
+        /// Writes the given value to writeable fields. All FieldMode values are interpreted and callbacks are executed where applicable.
+        /// </summary>
+        public void Write(long offset, ulong value)
+        {
+            WriteInner(offset, value);
+        }
+
+        /// <summary>
+        /// Defines the read callback that is called once on each read, regardles of the number of defined register fields.
+        /// Note that it will also be called for unreadable registers.
+        /// </summary>
+        /// <param name="readCallback">Method to be called whenever this register is read. The first parameter is the value of this register before read,
+        /// the second parameter is the value after read.</param>
+        public void DefineReadCallback(Action<ulong, ulong> readCallback)
+        {
+            readCallbacks.Add(readCallback);
+        }
+
+        /// <summary>
+        /// Defines the write callback that is called once on each write, regardles of the number of defined register fields.
+        /// Note that it will also be called for unwrittable registers.
+        /// </summary>
+        /// <param name="writeCallback">Method to be called whenever this register is written to. The first parameter is the value of this register before write,
+        /// the second parameter is the value written (without any modification).</param>
+        public void DefineWriteCallback(Action<ulong, ulong> writeCallback)
+        {
+            writeCallbacks.Add(writeCallback);
+        }
+
+        /// <summary>
+        /// Defines the change callback that is called once on each change, regardles of the number of defined register fields.
+        /// Note that it will also be called for unwrittable registers.
+        /// </summary>
+        /// <param name="changeCallback">Method to be called whenever this register's value is changed, either due to read or write. The first parameter is the value of this register before change,
+        /// the second parameter is the value after change.</param>
+        public void DefineChangeCallback(Action<ulong, ulong> changeCallback)
+        {
+            changeCallbacks.Add(changeCallback);
+        }
+
+        /// <summary>
+        /// Gets the underlying value without any modification or reaction.
+        /// </summary>
+        public ulong Value
+        {
+            get
+            {
+                return UnderlyingValue;
+            }
+        }
+
+        protected override void CallChangeHandlers(ulong oldValue, ulong newValue)
+        {
+            CallHandlers(changeCallbacks, oldValue, newValue);
+        }
+
+        protected override void CallReadHandlers(ulong oldValue, ulong newValue)
+        {
+            CallHandlers(readCallbacks, oldValue, newValue);
+        }
+
+        protected override void CallWriteHandlers(ulong oldValue, ulong newValue)
+        {
+            CallHandlers(writeCallbacks, oldValue, newValue);
+        }
+
+        private List<Action<ulong, ulong>> readCallbacks = new List<Action<ulong, ulong>>();
+        private List<Action<ulong, ulong>> writeCallbacks = new List<Action<ulong, ulong>>();
+        private List<Action<ulong, ulong>> changeCallbacks = new List<Action<ulong, ulong>>();
+    }
+
+    /// <summary>
     /// 32 bit <see cref="PeripheralRegister"/>.
     /// </summary>
     public sealed class DoubleWordRegister : PeripheralRegister
@@ -42,7 +145,7 @@ namespace Antmicro.Renode.Core.Structure.Registers
         /// </summary>
         public uint Read()
         {
-            return ReadInner();
+            return (uint)ReadInner();
         }
 
         /// <summary>
@@ -93,23 +196,23 @@ namespace Antmicro.Renode.Core.Structure.Registers
         {
             get
             {
-                return UnderlyingValue;
+                return (uint)UnderlyingValue;
             }
         }
 
-        protected override void CallChangeHandlers(uint oldValue, uint newValue)
+        protected override void CallChangeHandlers(ulong oldValue, ulong newValue)
         {
-            CallHandlers(changeCallbacks, oldValue, newValue);
+            CallHandlers(changeCallbacks, (uint)oldValue, (uint)newValue);
         }
 
-        protected override void CallReadHandlers(uint oldValue, uint newValue)
+        protected override void CallReadHandlers(ulong oldValue, ulong newValue)
         {
-            CallHandlers(readCallbacks, oldValue, newValue);
+            CallHandlers(readCallbacks, (uint)oldValue, (uint)newValue);
         }
 
-        protected override void CallWriteHandlers(uint oldValue, uint newValue)
+        protected override void CallWriteHandlers(ulong oldValue, ulong newValue)
         {
-            CallHandlers(writeCallbacks, oldValue, newValue);
+            CallHandlers(writeCallbacks, (uint)oldValue, (uint)newValue);
         }
 
         private List<Action<uint, uint>> readCallbacks = new List<Action<uint, uint>>();
@@ -200,17 +303,17 @@ namespace Antmicro.Renode.Core.Structure.Registers
             }
         }
 
-        protected override void CallChangeHandlers(uint oldValue, uint newValue)
+        protected override void CallChangeHandlers(ulong oldValue, ulong newValue)
         {
             CallHandlers(changeCallbacks, (ushort)oldValue, (ushort)newValue);
         }
 
-        protected override void CallReadHandlers(uint oldValue, uint newValue)
+        protected override void CallReadHandlers(ulong oldValue, ulong newValue)
         {
             CallHandlers(readCallbacks, (ushort)oldValue, (ushort)newValue);
         }
 
-        protected override void CallWriteHandlers(uint oldValue, uint newValue)
+        protected override void CallWriteHandlers(ulong oldValue, ulong newValue)
         {
             CallHandlers(writeCallbacks, (ushort)oldValue, (ushort)newValue);
         }
@@ -303,17 +406,17 @@ namespace Antmicro.Renode.Core.Structure.Registers
             }
         }
 
-        protected override void CallChangeHandlers(uint oldValue, uint newValue)
+        protected override void CallChangeHandlers(ulong oldValue, ulong newValue)
         {
             CallHandlers(changeCallbacks, (byte)oldValue, (byte)newValue);
         }
 
-        protected override void CallReadHandlers(uint oldValue, uint newValue)
+        protected override void CallReadHandlers(ulong oldValue, ulong newValue)
         {
             CallHandlers(readCallbacks, (byte)oldValue, (byte)newValue);
         }
 
-        protected override void CallWriteHandlers(uint oldValue, uint newValue)
+        protected override void CallWriteHandlers(ulong oldValue, ulong newValue)
         {
             CallHandlers(writeCallbacks, (byte)oldValue, (byte)newValue);
         }
@@ -346,7 +449,7 @@ namespace Antmicro.Renode.Core.Structure.Registers
         /// <param name="position">Offset in the register.</param>
         /// <param name="width">Width of field.</param>
         /// <param name="allowedValue">Value allowed to be written.<\param>
-        public void Reserved(int position, int width, uint? allowedValue = null)
+        public void Reserved(int position, int width, ulong? allowedValue = null)
         {
             Tag("RESERVED", position, width, allowedValue);
         }
@@ -358,15 +461,15 @@ namespace Antmicro.Renode.Core.Structure.Registers
         /// <param name="position">Offset in the register.</param>
         /// <param name="width">Width of field.</param>
         /// <param name="allowedValue">Value allowed to be written.<\param>
-        public void Tag(string name, int position, int width, uint? allowedValue = null)
+        public void Tag(string name, int position, int width, ulong? allowedValue = null)
         {
             ThrowIfRangeIllegal(position, width, name);
-            
+
             if(allowedValue != null)
             {
                 ThrowIfAllowedValueDoesNotFitInWidth(width, allowedValue.Value, name);
             }
-            
+
             tags.Add(new Tag
             {
                 Name = name,
@@ -422,8 +525,8 @@ namespace Antmicro.Renode.Core.Structure.Registers
         /// the value returned from it. This returned value is eventually passed as the first parameter of <paramref name="readCallback"/>.</param>
         /// <param name="softResettable">Indicates whether the field should be cleared by soft reset.</param>
         /// <param name="name">Ignored parameter, for convenience. Treat it as a comment.</param>
-        public IValueRegisterField DefineValueField(int position, int width, FieldMode mode = FieldMode.Read | FieldMode.Write, Action<uint, uint> readCallback = null,
-            Action<uint, uint> writeCallback = null, Action<uint, uint> changeCallback = null, Func<uint, uint> valueProviderCallback = null, bool softResettable = true,
+        public IValueRegisterField DefineValueField(int position, int width, FieldMode mode = FieldMode.Read | FieldMode.Write, Action<ulong, ulong> readCallback = null,
+            Action<ulong, ulong> writeCallback = null, Action<ulong, ulong> changeCallback = null, Func<ulong, ulong> valueProviderCallback = null, bool softResettable = true,
             string name = null)
         {
             ThrowIfRangeIllegal(position, width, name);
@@ -471,7 +574,7 @@ namespace Antmicro.Renode.Core.Structure.Registers
             return field;
         }
 
-        protected PeripheralRegister(IPeripheral parent, uint resetValue, bool softResettable, int maxLength)
+        protected PeripheralRegister(IPeripheral parent, ulong resetValue, bool softResettable, int maxLength)
         {
             this.parent = parent;
             this.MaxRegisterLength = maxLength;
@@ -483,7 +586,7 @@ namespace Antmicro.Renode.Core.Structure.Registers
             Reset();
         }
 
-        protected uint ReadInner()
+        protected ulong ReadInner()
         {
             foreach(var registerField in registerFields)
             {
@@ -523,7 +626,7 @@ namespace Antmicro.Renode.Core.Structure.Registers
             return valueToRead;
         }
 
-        protected void WriteInner(long offset, uint value)
+        protected void WriteInner(long offset, ulong value)
         {
             var baseValue = UnderlyingValue;
             var difference = UnderlyingValue ^ value;
@@ -534,41 +637,41 @@ namespace Antmicro.Renode.Core.Structure.Registers
                 //switch is OK, because write modes are exclusive.
                 switch(registerField.fieldMode.WriteBits())
                 {
-                case FieldMode.Write:
-                    if(BitHelper.AreAnyBitsSet(difference, registerField.position, registerField.width))
-                    {
-                        BitHelper.UpdateWith(ref UnderlyingValue, value, registerField.position, registerField.width);
-                        changedRegisters.Add(registerField);
-                    }
-                    break;
-                case FieldMode.Set:
-                    if(BitHelper.AreAnyBitsSet(setRegisters, registerField.position, registerField.width))
-                    {
-                        BitHelper.OrWith(ref UnderlyingValue, setRegisters, registerField.position, registerField.width);
-                        changedRegisters.Add(registerField);
-                    }
-                    break;
-                case FieldMode.Toggle:
-                    if(BitHelper.AreAnyBitsSet(value, registerField.position, registerField.width))
-                    {
-                        BitHelper.XorWith(ref UnderlyingValue, value, registerField.position, registerField.width);
-                        changedRegisters.Add(registerField);
-                    }
-                    break;
-                case FieldMode.WriteOneToClear:
-                    if(BitHelper.AreAnyBitsSet(~difference, registerField.position, registerField.width))
-                    {
-                        BitHelper.AndWithNot(ref UnderlyingValue, value, registerField.position, registerField.width);
-                        changedRegisters.Add(registerField);
-                    }
-                    break;
-                case FieldMode.WriteZeroToClear:
-                    if(BitHelper.AreAnyBitsSet(difference, registerField.position, registerField.width))
-                    {
-                        BitHelper.AndWithNot(ref UnderlyingValue, ~value, registerField.position, registerField.width);
-                        changedRegisters.Add(registerField);
-                    }
-                    break;
+                    case FieldMode.Write:
+                        if(BitHelper.AreAnyBitsSet(difference, registerField.position, registerField.width))
+                        {
+                            BitHelper.UpdateWith(ref UnderlyingValue, value, registerField.position, registerField.width);
+                            changedRegisters.Add(registerField);
+                        }
+                        break;
+                    case FieldMode.Set:
+                        if(BitHelper.AreAnyBitsSet(setRegisters, registerField.position, registerField.width))
+                        {
+                            BitHelper.OrWith(ref UnderlyingValue, setRegisters, registerField.position, registerField.width);
+                            changedRegisters.Add(registerField);
+                        }
+                        break;
+                    case FieldMode.Toggle:
+                        if(BitHelper.AreAnyBitsSet(value, registerField.position, registerField.width))
+                        {
+                            BitHelper.XorWith(ref UnderlyingValue, value, registerField.position, registerField.width);
+                            changedRegisters.Add(registerField);
+                        }
+                        break;
+                    case FieldMode.WriteOneToClear:
+                        if(BitHelper.AreAnyBitsSet(~difference, registerField.position, registerField.width))
+                        {
+                            BitHelper.AndWithNot(ref UnderlyingValue, value, registerField.position, registerField.width);
+                            changedRegisters.Add(registerField);
+                        }
+                        break;
+                    case FieldMode.WriteZeroToClear:
+                        if(BitHelper.AreAnyBitsSet(difference, registerField.position, registerField.width))
+                        {
+                            BitHelper.AndWithNot(ref UnderlyingValue, ~value, registerField.position, registerField.width);
+                            changedRegisters.Add(registerField);
+                        }
+                        break;
                 }
             }
             foreach(var registerField in registerFields)
@@ -591,7 +694,7 @@ namespace Antmicro.Renode.Core.Structure.Registers
             {
                 parent.Log(LogLevel.Warning, TagLogger(offset, unhandledWrites, value));
             }
-            
+
             if(InvalidTagValues(offset, value, out var invalidValueLog))
             {
                 parent.Log(LogLevel.Error, invalidValueLog);
@@ -606,12 +709,12 @@ namespace Antmicro.Renode.Core.Structure.Registers
             }
         }
 
-        protected abstract void CallWriteHandlers(uint oldValue, uint newValue);
-        protected abstract void CallReadHandlers(uint oldValue, uint newValue);
-        protected abstract void CallChangeHandlers(uint oldValue, uint newValue);
+        protected abstract void CallWriteHandlers(ulong oldValue, ulong newValue);
+        protected abstract void CallReadHandlers(ulong oldValue, ulong newValue);
+        protected abstract void CallChangeHandlers(ulong oldValue, ulong newValue);
 
 
-        protected uint UnderlyingValue;
+        protected ulong UnderlyingValue;
 
         protected readonly int MaxRegisterLength;
 
@@ -621,7 +724,7 @@ namespace Antmicro.Renode.Core.Structure.Registers
         /// <param name="offset">The offset of the affected register.</param>
         /// <param name="value">Unhandled value.</param>
         /// <param name="originalValue">The whole value written to the register.</param>
-        private string TagLogger(long offset, uint value, uint originalValue)
+        private string TagLogger(long offset, ulong value, ulong originalValue)
         {
             var tagsAffected = tags.Select(x => new { x.Name, Value = BitHelper.GetValue(value, x.Position, x.Width) })
                 .Where(x => x.Value != 0);
@@ -633,14 +736,14 @@ namespace Antmicro.Renode.Core.Structure.Registers
                     originalValue);
         }
 
-        private bool InvalidTagValues(long offset, uint originalValue, out string log)
+        private bool InvalidTagValues(long offset, ulong originalValue, out string log)
         {
-            uint allowedValuesMask = 0;
-            uint allowedValues = 0;
-            
+            ulong allowedValuesMask = 0;
+            ulong allowedValues = 0;
+
             foreach(var tag in tags.Where(x => x.AllowedValue != null))
             {
-                allowedValuesMask |= ((1u << tag.Width) - 1) << tag.Position;
+                allowedValuesMask |= BitHelper.CalculateQuadWordMask(tag.Width, tag.Position);
                 allowedValues |= tag.AllowedValue.Value << tag.Position;
             }
 
@@ -648,13 +751,13 @@ namespace Antmicro.Renode.Core.Structure.Registers
             if(invalidBits == 0)
             {
                 log = "";
-                return false; 
+                return false;
             }
 
-            var writtenValue = "0b" + Convert.ToString(originalValue, 2).PadLeft(MaxRegisterLength, '0');
+            var writtenValue = "0b" + Convert.ToString((long)originalValue, 2).PadLeft(MaxRegisterLength, '0');
             var desiredValues = "0b";
-            
-            for(int i = MaxRegisterLength - 1; i >=0; i--)
+
+            for(int i = MaxRegisterLength - 1; i >= 0; i--)
             {
                 if(((allowedValuesMask >> i) & 1u) == 1)
                 {
@@ -669,7 +772,7 @@ namespace Antmicro.Renode.Core.Structure.Registers
             return true;
         }
 
-            
+
         private void ThrowIfRangeIllegal(int position, int width, string name)
         {
             if(width < 0)
@@ -699,7 +802,7 @@ namespace Antmicro.Renode.Core.Structure.Registers
             }
         }
 
-        private void ThrowIfAllowedValueDoesNotFitInWidth(int width, uint allowedValue, string name)
+        private void ThrowIfAllowedValueDoesNotFitInWidth(int width, ulong allowedValue, string name)
         {
             if((allowedValue >> width) != 0)
             {
@@ -709,15 +812,10 @@ namespace Antmicro.Renode.Core.Structure.Registers
 
         private void RecalculateFieldMask()
         {
-            var mask = 0u;
+            var mask = 0UL;
             foreach(var field in registerFields)
             {
-                if(field.width == 32)
-                {
-                    mask = uint.MaxValue;
-                    break;
-                }
-                mask |= ((1u << field.width) - 1) << field.position;
+                mask |= BitHelper.CalculateQuadWordMask(field.width, field.position);
             }
             definedFieldsMask = mask;
         }
@@ -733,9 +831,9 @@ namespace Antmicro.Renode.Core.Structure.Registers
 
         private IPeripheral parent;
 
-        private uint definedFieldsMask;
+        private ulong definedFieldsMask;
 
-        private uint resettableMask = uint.MaxValue;
-        private readonly uint resetValue;
+        private ulong resettableMask = ulong.MaxValue;
+        private readonly ulong resetValue;
     }
 }

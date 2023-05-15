@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -7,13 +7,11 @@
 //
 using System;
 using Microsoft.Scripting.Hosting;
-using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals.Bus;
 using Antmicro.Migrant.Hooks;
 using Antmicro.Migrant;
 using System.Linq;
 using Antmicro.Renode.Core;
-using Antmicro.Renode.Exceptions;
 
 namespace Antmicro.Renode.Peripherals.Python
 {
@@ -134,7 +132,7 @@ namespace Antmicro.Renode.Peripherals.Python
         // naming convention here is pythonic
         public class PythonRequest
         {
-            public uint value { get; set; }
+            public ulong value { get; set; }
             public byte length { get; set; }
             public RequestType type { get; set; }
             public long offset { get; set; }

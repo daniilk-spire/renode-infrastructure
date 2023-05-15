@@ -5,7 +5,7 @@
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
 //
-﻿using System;
+using System;
 
 namespace Antmicro.Renode.Core.Structure.Registers
 {
@@ -51,8 +51,8 @@ namespace Antmicro.Renode.Core.Structure.Registers
         /// Fluent API for value field creation. For parameters see <see cref="PeripheralRegister.DefineValueField"/>.
         /// </summary>
         /// <returns>This register with a defined value field.</returns>
-        public static T WithValueField<T>(this T register, int position, int width, FieldMode mode = FieldMode.Read | FieldMode.Write, Action<uint, uint> readCallback = null,
-            Action<uint, uint> writeCallback = null, Action<uint, uint> changeCallback = null, Func<uint, uint> valueProviderCallback = null, bool softResettable = true,
+        public static T WithValueField<T>(this T register, int position, int width, FieldMode mode = FieldMode.Read | FieldMode.Write, Action<ulong, ulong> readCallback = null,
+            Action<ulong, ulong> writeCallback = null, Action<ulong, ulong> changeCallback = null, Func<ulong, ulong> valueProviderCallback = null, bool softResettable = true,
             string name = null) where T : PeripheralRegister
         {
             register.DefineValueField(position, width, mode, readCallback, writeCallback, changeCallback, valueProviderCallback, softResettable, name);
@@ -77,9 +77,9 @@ namespace Antmicro.Renode.Core.Structure.Registers
         /// <param name="softResettable">Indicates whether the field should be cleared by soft reset.</param>
         /// <param name="name">Ignored parameter, for convenience. Treat it as a comment.</param>
         /// <returns>This register with defined value fields.</returns>
-        public static T WithValueFields<T>(this T register, int position, int width, int count, FieldMode mode = FieldMode.Read | FieldMode.Write, Action<int, uint, uint> readCallback = null,
-            Action<int, uint, uint> writeCallback = null, Action<int, uint, uint> changeCallback = null, Func<int, uint, uint> valueProviderCallback = null, bool softResettable = true,
-            string name = null) where T: PeripheralRegister
+        public static T WithValueFields<T>(this T register, int position, int width, int count, FieldMode mode = FieldMode.Read | FieldMode.Write, Action<int, ulong, ulong> readCallback = null,
+            Action<int, ulong, ulong> writeCallback = null, Action<int, ulong, ulong> changeCallback = null, Func<int, ulong, ulong> valueProviderCallback = null, bool softResettable = true,
+            string name = null) where T : PeripheralRegister
         {
             return WithValueFields(register, position, width, count, out var _, mode, readCallback, writeCallback, changeCallback, valueProviderCallback, softResettable, name);
         }
@@ -122,8 +122,8 @@ namespace Antmicro.Renode.Core.Structure.Registers
         /// This overload allows you to retrieve the created field via <c>valueField</c> parameter.
         /// </summary>
         /// <returns>This register with a defined value field.</returns>
-        public static T WithValueField<T>(this T register, int position, int width, out IValueRegisterField valueField, FieldMode mode = FieldMode.Read | FieldMode.Write, Action<uint, uint> readCallback = null,
-            Action<uint, uint> writeCallback = null, Action<uint, uint> changeCallback = null, Func<uint, uint> valueProviderCallback = null, bool softResettable = true, string name = null) where T : PeripheralRegister
+        public static T WithValueField<T>(this T register, int position, int width, out IValueRegisterField valueField, FieldMode mode = FieldMode.Read | FieldMode.Write, Action<ulong, ulong> readCallback = null,
+            Action<ulong, ulong> writeCallback = null, Action<ulong, ulong> changeCallback = null, Func<ulong, ulong> valueProviderCallback = null, bool softResettable = true, string name = null) where T : PeripheralRegister
         {
             valueField = register.DefineValueField(position, width, mode, readCallback, writeCallback, changeCallback, valueProviderCallback, softResettable, name);
             return register;
@@ -134,9 +134,9 @@ namespace Antmicro.Renode.Core.Structure.Registers
         /// This overload allows you to retrieve the created array of fields via <c>valueFields</c> parameter.
         /// </summary>
         /// <returns>This register with defined value fields.</returns>
-        public static T WithValueFields<T>(this T register, int position, int width, int count, out IValueRegisterField[] valueFields, FieldMode mode = FieldMode.Read | FieldMode.Write, Action<int, uint, uint> readCallback = null,
-            Action<int, uint, uint> writeCallback = null, Action<int, uint, uint> changeCallback = null, Func<int, uint, uint> valueProviderCallback = null, bool softResettable = true,
-            string name = null) where T: PeripheralRegister
+        public static T WithValueFields<T>(this T register, int position, int width, int count, out IValueRegisterField[] valueFields, FieldMode mode = FieldMode.Read | FieldMode.Write, Action<int, ulong, ulong> readCallback = null,
+            Action<int, ulong, ulong> writeCallback = null, Action<int, ulong, ulong> changeCallback = null, Func<int, ulong, ulong> valueProviderCallback = null, bool softResettable = true,
+            string name = null) where T : PeripheralRegister
         {
             valueFields = new IValueRegisterField[count];
             for(var i = 0; i < count; i++)
@@ -144,10 +144,10 @@ namespace Antmicro.Renode.Core.Structure.Registers
                 var j = i;
 
                 valueFields[j] = register.DefineValueField(position + (j * width), width, mode,
-                    readCallback == null ? null : (Action<uint, uint>)((x, y) => readCallback(j, x, y)),
-                    writeCallback == null ? null : (Action<uint, uint>)((x, y) => writeCallback(j, x, y)),
-                    changeCallback == null ? null : (Action<uint, uint>)((x, y) => changeCallback(j, x, y)),
-                    valueProviderCallback == null ? null : (Func<uint, uint>)((x) => valueProviderCallback(j, x)),
+                    readCallback == null ? null : (Action<ulong, ulong>)((x, y) => readCallback(j, x, y)),
+                    writeCallback == null ? null : (Action<ulong, ulong>)((x, y) => writeCallback(j, x, y)),
+                    changeCallback == null ? null : (Action<ulong, ulong>)((x, y) => changeCallback(j, x, y)),
+                    valueProviderCallback == null ? null : (Func<ulong, ulong>)((x) => valueProviderCallback(j, x)),
                     softResettable,
                     name == null ? null : $"{name}_{j}");
             }
@@ -245,120 +245,10 @@ namespace Antmicro.Renode.Core.Structure.Registers
         }
 
         /// <summary>
-        /// Fluent API for read callback registration. For description see <see cref="DoubleWordRegister.DefineReadCallback"/>.
-        /// </summary>
-        /// <returns>This register with a defined callback.</returns>
-        public static DoubleWordRegister WithReadCallback(this DoubleWordRegister register, Action<uint, uint> readCallback)
-        {
-            register.DefineReadCallback (readCallback);
-            return register;
-        }
-
-        /// <summary>
-        /// Fluent API for write callback registration. For description see <see cref="DoubleWordRegister.DefineWriteCallback"/>.
-        /// </summary>
-        /// <returns>This register with a defined callback.</returns>
-        public static DoubleWordRegister WithWriteCallback (this DoubleWordRegister register, Action<uint, uint> writeCallback)
-        {
-            register.DefineWriteCallback (writeCallback);
-            return register;
-        }
-
-        /// <summary>
-        /// Fluent API for change callback registration. For description see <see cref="DoubleWordRegister.DefineChangeCallback"/>.
-        /// </summary>
-        /// <returns>This register with a defined callback.</returns>
-        public static DoubleWordRegister WithChangeCallback (this DoubleWordRegister register, Action<uint, uint> changeCallback)
-        {
-            register.DefineChangeCallback (changeCallback);
-            return register;
-        }
-
-        /// <summary>
-        /// Fluent API for read callback registration. For description see <see cref="WordRegister.DefineReadCallback"/>.
-        /// </summary>
-        /// <returns>This register with a defined callback.</returns>
-        public static WordRegister WithReadCallback (this WordRegister register, Action<ushort, ushort> readCallback)
-        {
-            register.DefineReadCallback (readCallback);
-            return register;
-        }
-
-        /// <summary>
-        /// Fluent API for write callback registration. For description see <see cref="WordRegister.DefineWriteCallback"/>.
-        /// </summary>
-        /// <returns>This register with a defined callback.</returns>
-        public static WordRegister WithWriteCallback (this WordRegister register, Action<ushort, ushort> writeCallback)
-        {
-            register.DefineWriteCallback (writeCallback);
-            return register;
-        }
-
-        /// <summary>
-        /// Fluent API for change callback registration. For description see <see cref="WordRegister.DefineChangeCallback"/>.
-        /// </summary>
-        /// <returns>This register with a defined callback.</returns>
-        public static WordRegister WithChangeCallback (this WordRegister register, Action<ushort, ushort> changeCallback)
-        {
-            register.DefineChangeCallback (changeCallback);
-            return register;
-        }
-
-        /// <summary>
-        /// Fluent API for read callback registration. For description see <see cref="ByteRegister.DefineReadCallback"/>.
-        /// </summary>
-        /// <returns>This register with a defined callback.</returns>
-        public static ByteRegister WithReadCallback (this ByteRegister register, Action<byte, byte> readCallback)
-        {
-            register.DefineReadCallback (readCallback);
-            return register;
-        }
-
-        /// <summary>
-        /// Fluent API for write callback registration. For description see <see cref="ByteRegister.DefineWriteCallback"/>.
-        /// </summary>
-        /// <returns>This register with a defined callback.</returns>
-        public static ByteRegister WithWriteCallback (this ByteRegister register, Action<byte, byte> writeCallback)
-        {
-            register.DefineWriteCallback (writeCallback);
-            return register;
-        }
-
-        /// <summary>
-        /// Fluent API for change callback registration. For description see <see cref="ByteRegister.DefineChangeCallback"/>.
-        /// </summary>
-        /// <returns>This register with a defined callback.</returns>
-        public static ByteRegister WithChangeCallback (this ByteRegister register, Action<byte, byte> changeCallback)
-        {
-            register.DefineChangeCallback (changeCallback);
-            return register;
-        }
-
-        /// <summary>
         /// Fluent API for tagging bits as "RESERVED". For description see <see cref="PeripheralRegister.Reserved"/>.
         /// </summary>
         /// <returns>This register with a new "RESERVED" tag.</returns>
-        public static DoubleWordRegister WithReservedBits(this DoubleWordRegister register, int position, int width, uint? allowedValue = null)
-        {
-            register.Reserved(position, width, allowedValue);
-            return register;
-        }
-
-        /// <summary>
-        /// Fluent API for tagging bits as "RESERVED". For description see <see cref="PeripheralRegister.Reserved"/>.
-        /// </summary>
-        /// <returns>This register with a new "RESERVED" tag.</returns>
-        public static WordRegister WithReservedBits(this WordRegister register, int position, int width, uint? allowedValue = null)
-        {
-            register.Reserved(position, width, allowedValue);
-            return register;
-        }
-
-        /// <summary>
-        /// Fluent API for tagging bits as "RESERVED". For description see <see cref="PeripheralRegister.Reserved"/>.
-        /// </summary>
-        /// <returns>This register with a new "RESERVED" tag.</returns>
-        public static ByteRegister WithReservedBits(this ByteRegister register, int position, int width, uint? allowedValue = null)
+        public static T WithReservedBits<T>(this T register, int position, int width, uint? allowedValue = null) where T : PeripheralRegister
         {
             register.Reserved(position, width, allowedValue);
             return register;
@@ -368,9 +258,141 @@ namespace Antmicro.Renode.Core.Structure.Registers
         /// Fluent API for tagging bits as ignored.
         /// </summary>
         /// <returns>This defines a value field to avoid warnings about unhandled bits.</returns>
-        public static R WithIgnoredBits<R>(this R register, int position, int width) where R : PeripheralRegister
+        public static T WithIgnoredBits<T>(this T register, int position, int width) where T : PeripheralRegister
         {
             return register.WithValueField(position, width, name: "ignored");
+        }
+    }
+
+    public static class QuadWordRegisterExtensions
+    {
+        /// <summary>
+        /// Fluent API for read callback registration. For description see <see cref="QuadWordRegister.DefineReadCallback"/>.
+        /// </summary>
+        /// <returns>This register with a defined callback.</returns>
+        public static QuadWordRegister WithReadCallback(this QuadWordRegister register, Action<ulong, ulong> readCallback)
+        {
+            register.DefineReadCallback(readCallback);
+            return register;
+        }
+
+        /// <summary>
+        /// Fluent API for write callback registration. For description see <see cref="QuadWordRegister.DefineWriteCallback"/>.
+        /// </summary>
+        /// <returns>This register with a defined callback.</returns>
+        public static QuadWordRegister WithWriteCallback(this QuadWordRegister register, Action<ulong, ulong> writeCallback)
+        {
+            register.DefineWriteCallback(writeCallback);
+            return register;
+        }
+
+        /// <summary>
+        /// Fluent API for change callback registration. For description see <see cref="QuadWordRegister.DefineChangeCallback"/>.
+        /// </summary>
+        /// <returns>This register with a defined callback.</returns>
+        public static QuadWordRegister WithChangeCallback(this QuadWordRegister register, Action<ulong, ulong> changeCallback)
+        {
+            register.DefineChangeCallback(changeCallback);
+            return register;
+        }
+    }
+
+    public static class DoubleWordRegisterExtensions
+    {
+        /// <summary>
+        /// Fluent API for read callback registration. For description see <see cref="DoubleWordRegister.DefineReadCallback"/>.
+        /// </summary>
+        /// <returns>This register with a defined callback.</returns>
+        public static DoubleWordRegister WithReadCallback(this DoubleWordRegister register, Action<uint, uint> readCallback)
+        {
+            register.DefineReadCallback(readCallback);
+            return register;
+        }
+
+        /// <summary>
+        /// Fluent API for write callback registration. For description see <see cref="DoubleWordRegister.DefineWriteCallback"/>.
+        /// </summary>
+        /// <returns>This register with a defined callback.</returns>
+        public static DoubleWordRegister WithWriteCallback(this DoubleWordRegister register, Action<uint, uint> writeCallback)
+        {
+            register.DefineWriteCallback(writeCallback);
+            return register;
+        }
+
+        /// <summary>
+        /// Fluent API for change callback registration. For description see <see cref="DoubleWordRegister.DefineChangeCallback"/>.
+        /// </summary>
+        /// <returns>This register with a defined callback.</returns>
+        public static DoubleWordRegister WithChangeCallback(this DoubleWordRegister register, Action<uint, uint> changeCallback)
+        {
+            register.DefineChangeCallback(changeCallback);
+            return register;
+        }
+    }
+
+    public static class WordRegisterExtensions
+    {
+        /// <summary>
+        /// Fluent API for read callback registration. For description see <see cref="WordRegister.DefineReadCallback"/>.
+        /// </summary>
+        /// <returns>This register with a defined callback.</returns>
+        public static WordRegister WithReadCallback(this WordRegister register, Action<ushort, ushort> readCallback)
+        {
+            register.DefineReadCallback(readCallback);
+            return register;
+        }
+
+        /// <summary>
+        /// Fluent API for write callback registration. For description see <see cref="WordRegister.DefineWriteCallback"/>.
+        /// </summary>
+        /// <returns>This register with a defined callback.</returns>
+        public static WordRegister WithWriteCallback(this WordRegister register, Action<ushort, ushort> writeCallback)
+        {
+            register.DefineWriteCallback(writeCallback);
+            return register;
+        }
+
+        /// <summary>
+        /// Fluent API for change callback registration. For description see <see cref="WordRegister.DefineChangeCallback"/>.
+        /// </summary>
+        /// <returns>This register with a defined callback.</returns>
+        public static WordRegister WithChangeCallback(this WordRegister register, Action<ushort, ushort> changeCallback)
+        {
+            register.DefineChangeCallback(changeCallback);
+            return register;
+        }
+    }
+
+    public static class ByteRegisterExtensions
+    {
+        /// <summary>
+        /// Fluent API for read callback registration. For description see <see cref="ByteRegister.DefineReadCallback"/>.
+        /// </summary>
+        /// <returns>This register with a defined callback.</returns>
+        public static ByteRegister WithReadCallback(this ByteRegister register, Action<byte, byte> readCallback)
+        {
+            register.DefineReadCallback(readCallback);
+            return register;
+        }
+
+        /// <summary>
+        /// Fluent API for write callback registration. For description see <see cref="ByteRegister.DefineWriteCallback"/>.
+        /// </summary>
+        /// <returns>This register with a defined callback.</returns>
+        public static ByteRegister WithWriteCallback(this ByteRegister register, Action<byte, byte> writeCallback)
+        {
+            register.DefineWriteCallback(writeCallback);
+            return register;
+        }
+
+        /// <summary>
+        /// Fluent API for change callback registration. For description see <see cref="ByteRegister.DefineChangeCallback"/>.
+        /// </summary>
+        /// <returns>This register with a defined callback.</returns>
+        public static ByteRegister WithChangeCallback(this ByteRegister register, Action<byte, byte> changeCallback)
+        {
+            register.DefineChangeCallback(changeCallback);
+            return register;
         }
     }
 }

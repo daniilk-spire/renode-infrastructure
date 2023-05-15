@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -156,6 +156,9 @@ namespace Antmicro.Renode.HostInterfaces.Network
             }
             try
             {
+                // If we don't have rw access to /dev/net/tun we will loop here indefinitely
+                // because we won't be able to open tap
+                // Fortunately /dev/net/tun has rw by default
                 tapFileDescriptor = TAPTools.OpenTAP(devName, persistent);
                 if(tapFileDescriptor < 0)
                 {
@@ -192,7 +195,7 @@ namespace Antmicro.Renode.HostInterfaces.Network
                     if(!started || process.ExitCode != 0)
                     {
                         this.Log(LogLevel.Warning, "Could not create TUN/TAP interface, running in dummy mode.");
-                        this.Log(LogLevel.Debug, "Error {0} while opening tun device '{1}': {2}", process.ExitCode, deviceName, output);
+                        this.Log(LogLevel.Debug, "Error {0} while opening tun device '{1}'. {2}", process.ExitCode, deviceName, output);
                         return;
                     }
                     Init();

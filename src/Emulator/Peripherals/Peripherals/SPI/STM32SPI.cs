@@ -5,11 +5,9 @@
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
 //
-﻿using System;
 using Antmicro.Renode.Peripherals.Bus;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Core.Structure;
-using System.Collections.Generic;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure.Registers;
 using Antmicro.Renode.Utilities.Collections;
@@ -22,10 +20,14 @@ namespace Antmicro.Renode.Peripherals.SPI
         {
             receiveBuffer = new CircularBuffer<byte>(bufferCapacity);
             IRQ = new GPIO();
+            registers = new DoubleWordRegisterCollection(this);
             SetupRegisters();
             Reset();
         }
 
+        // We can't use AllowedTranslations because then WriteByte/WriteWord will trigger
+        // an additional read (see ReadWriteExtensions:WriteByteUsingDword).
+        // We can't have this happen for the data register.
         public byte ReadByte(long offset)
         {
             // byte interface is there for DMA
@@ -61,26 +63,12 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         public uint ReadDoubleWord(long offset)
         {
-            switch((Registers)offset)
-            {
-            case Registers.Data:
-                return HandleDataRead();
-            default:
-                return registers.Read(offset);
-            }
+            return registers.Read(offset);
         }
 
         public void WriteDoubleWord(long offset, uint value)
         {
-            switch((Registers)offset)
-            {
-            case Registers.Data:
-                HandleDataWrite(value);
-                break;
-            default:
-                registers.Write(offset, value);
-                break;
-            }
+            registers.Write(offset, value);
         }
 
         public override void Reset()
@@ -153,33 +141,102 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         private void SetupRegisters()
         {
-            var control2 = new DoubleWordRegister(this);
-            txBufferEmptyInterruptEnable = control2.DefineFlagField(7);
-            rxBufferNotEmptyInterruptEnable = control2.DefineFlagField(6);
-            txDmaEnable = control2.DefineFlagField(1);
-            rxDmaEnable = control2.DefineFlagField(0, writeCallback: (_,__) => Update());
-
-            var registerDictionary = new Dictionary<long, DoubleWordRegister>
-            { 
-                { (long)Registers.Control1, new DoubleWordRegister(this).WithValueField(3,3, name:"Baud").WithFlag(2, name:"Master")
-                        .WithFlag(8, name:"SSI").WithFlag(9, name:"SSM").WithFlag(6, changeCallback: (oldValue, newValue) => {
+            // Some fields relate to the physical layer of the SPI protocol, these are not
+            // taken into account in Renode and are defined as flags or value fields without
+            // a corresponding RegisterField or read/write callbacks. They are marked with
+            // comments.
+            Registers.Control1.Define(registers)
+                .WithFlag(0, name: "CPHA") // Physical
+                .WithFlag(1, name: "CPOL") // Physical
+                .WithFlag(2, writeCallback: (_, value) =>
+                {
+                    if(!value)
+                    {
+                        this.Log(LogLevel.Warning, "Slave mode is not supported");
+                    }
+                }, name: "MSTR")
+                .WithValueField(3, 3, name: "Baud") // Physical
+                .WithFlag(6, changeCallback: (oldValue, newValue) =>
+                {
                     if(!newValue)
                     {
                         IRQ.Unset();
                     }
-                }, name:"SpiEnable")},
-                {(long)Registers.Status, new DoubleWordRegister(this, 2).WithFlag(1, FieldMode.Read, name:"TXE").WithFlag(0, FieldMode.Read, valueProviderCallback: _ => receiveBuffer.Count != 0 , name:"RXNE")},
-                {(long)Registers.CRCPolynomial, new DoubleWordRegister(this, 7).WithValueField(0, 16, name:"CRCPoly") },
-                {(long)Registers.I2SConfiguration, new DoubleWordRegister(this, 0).WithFlag(10, FieldMode.Read | FieldMode.WriteOneToClear, writeCallback: (oldValue, newValue) => {
+                }, name: "SpiEnable")
+                .WithFlag(7, name: "LSBFIRST") // Physical
+                .WithTaggedFlag("SSI", 8)
+                .WithTaggedFlag("SSM", 9)
+                .WithTaggedFlag("RXONLY", 10)
+                .WithTaggedFlag("DFF", 11)
+                .WithTaggedFlag("CRCNEXT", 12)
+                .WithTaggedFlag("CRCEN", 13)
+                .WithTaggedFlag("BIDIOE", 14)
+                .WithTaggedFlag("BIDIMODE", 15);
+
+            Registers.Control2.Define(registers)
+                .WithFlag(0, out rxDmaEnable, writeCallback: (_, __) => Update(), name: "RXDMAEN")
+                .WithFlag(1, out txDmaEnable, name: "TXDMAEN")
+                .WithTaggedFlag("SSOE", 2)
+                .WithReservedBits(3, 1)
+                .WithTaggedFlag("FRF", 4)
+                .WithTaggedFlag("ERRIE", 5)
+                .WithFlag(6, out rxBufferNotEmptyInterruptEnable, name: "RXNEIE")
+                .WithFlag(7, out txBufferEmptyInterruptEnable, name: "TXEIE")
+                .WithReservedBits(8, 24);
+
+            Registers.Status.Define(registers, 2)
+                .WithFlag(0, FieldMode.Read, valueProviderCallback: _ => receiveBuffer.Count != 0, name: "RXNE")
+                .WithFlag(1, FieldMode.Read, valueProviderCallback: _ => true, name: "TXE") // transfers are instant
+                .WithTaggedFlag("CHSIDE", 2) // r/o
+                .WithTaggedFlag("UDR", 3) // r/o
+                .WithTaggedFlag("CRCERR", 4) // rc_w0
+                .WithTaggedFlag("MODF", 5) // r/o
+                .WithTaggedFlag("OVR", 6) // r/o
+                .WithTaggedFlag("BSY", 7) // r/o
+                .WithTaggedFlag("FRE", 8) // r/o
+                .WithReservedBits(9, 23);
+
+            Registers.Data.Define(registers)
+                .WithValueField(0, 16, valueProviderCallback: _ => HandleDataRead(),
+                    writeCallback: (_, value) => HandleDataWrite((uint)value), name: "DR")
+                .WithReservedBits(16, 16);
+
+            Registers.CRCPolynomial.Define(registers, 7)
+                .WithTag("CRCPOLY", 0, 16)
+                .WithReservedBits(16, 16);
+
+            Registers.ReceivedCRC.Define(registers)
+                .WithTag("RxCRC", 0, 16) // r/o
+                .WithReservedBits(16, 16);
+
+            Registers.TransmittedCRC.Define(registers)
+                .WithTag("TxCRC", 0, 16) // r/o
+                .WithReservedBits(16, 16);
+
+            Registers.I2SConfiguration.Define(registers)
+                .WithTaggedFlag("CHLEN", 0)
+                .WithTag("DATLEN", 1, 2)
+                .WithTaggedFlag("CKPOL", 3)
+                .WithTag("I2SSTD", 4, 2)
+                .WithReservedBits(6, 1)
+                .WithTaggedFlag("PCMSYNC", 7)
+                .WithTag("I2SCFG", 8, 2)
+                .WithFlag(10, FieldMode.Read | FieldMode.WriteOneToClear, writeCallback: (oldValue, newValue) =>
+                {
                     // write one to clear to keep this bit 0
                     if(newValue)
                     {
                         this.Log(LogLevel.Warning, "Trying to enable not supported I2S mode.");
                     }
-                }, name:"I2SE")},
-                { (long)Registers.Control2, control2 }
-            };
-            registers = new DoubleWordRegisterCollection(this, registerDictionary);
+                }, name: "I2SE")
+                .WithTaggedFlag("I2SMOD", 11)
+                .WithReservedBits(12, 20);
+
+            Registers.I2SPrescaler.Define(registers, 2)
+                .WithTag("I2SDIV", 0, 8)
+                .WithTaggedFlag("ODD", 8)
+                .WithTaggedFlag("MCKOE", 9)
+                .WithReservedBits(10, 22);
         }
 
         private DoubleWordRegisterCollection registers;
@@ -196,7 +253,10 @@ namespace Antmicro.Renode.Peripherals.SPI
             Status = 0x8, // SPI_SR
             Data = 0xC, // SPI_DR
             CRCPolynomial = 0x10, // SPI_CRCPR
-            I2SConfiguration = 0x1C // SPI_I2SCFGR
+            ReceivedCRC = 0x14, // SPI_RXCRCR
+            TransmittedCRC = 0x18, // SPI_TXCRCR
+            I2SConfiguration = 0x1C, // SPI_I2SCFGR
+            I2SPrescaler = 0x20, // SPI_I2SPR
         }
     }
 }

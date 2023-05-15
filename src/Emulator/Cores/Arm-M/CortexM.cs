@@ -23,12 +23,14 @@ namespace Antmicro.Renode.Peripherals.CPU
 {
     public partial class CortexM : Arm
     {
-        public CortexM(string cpuType, Machine machine, NVIC nvic, uint id = 0, Endianess endianness = Endianess.LittleEndian) : base(cpuType, machine, id, endianness)
+        public CortexM(string cpuType, Machine machine, NVIC nvic, uint id = 0, Endianess endianness = Endianess.LittleEndian, uint? fpuInterruptNumber = null) : base(cpuType, machine, id, endianness)
         {
             if(nvic == null)
             {
                 throw new RecoverableException(new ArgumentNullException("nvic"));
             }
+
+            tlibSetFpuInterruptNumber((int?)fpuInterruptNumber ?? -1);
 
             this.nvic = nvic;
             nvic.AttachCPU(this);
@@ -103,6 +105,74 @@ namespace Antmicro.Renode.Peripherals.CPU
             set
             {
                 tlibToggleFpu(value ? 1 : 0);
+            }
+        }
+
+        public UInt32 FaultStatus
+        {
+            set
+            {
+                tlibSetFaultStatus(value);
+            }
+            get
+            {
+                return tlibGetFaultStatus();
+            }
+        }
+
+        public UInt32 MemoryFaultAddress
+        {
+            get
+            {
+                return tlibGetMemoryFaultAddress();
+            }
+        }
+
+        public bool MPUEnabled
+        {
+            get
+            {
+                return tlibIsMpuEnabled() != 0;
+            }
+            set
+            {
+                tlibEnableMpu(value ? 1 : 0);
+            }
+        }
+
+        public UInt32 MPURegionBaseAddress
+        {
+            set
+            {
+                tlibSetMpuRegionBaseAddress(value);
+            }
+            get
+            {
+                return tlibGetMpuRegionBaseAddress();
+            }
+        }
+
+        public UInt32 MPURegionAttributeAndSize
+        {
+            set
+            {
+                tlibSetMpuRegionSizeAndEnable(value);
+            }
+            get
+            {
+                return tlibGetMpuRegionSizeAndEnable();
+            }
+        }
+
+        public UInt32 MPURegionNumber
+        {
+            set
+            {
+                tlibSetMpuRegionNumber(value);
+            }
+            get
+            {
+                return tlibGetMpuRegionNumber();
             }
         }
 
@@ -217,6 +287,42 @@ namespace Antmicro.Renode.Peripherals.CPU
 
         [Import]
         private ActionInt32 tlibToggleFpu;
+
+        [Import]
+        private FuncUInt32 tlibGetFaultStatus;
+
+        [Import]
+        private ActionUInt32 tlibSetFaultStatus;
+
+        [Import]
+        private FuncUInt32 tlibGetMemoryFaultAddress;
+
+        [Import]
+        private ActionInt32 tlibEnableMpu;
+
+        [Import]
+        private FuncInt32 tlibIsMpuEnabled;
+
+        [Import]
+        private ActionUInt32 tlibSetMpuRegionBaseAddress;
+
+        [Import]
+        private FuncUInt32 tlibGetMpuRegionBaseAddress;
+
+        [Import]
+        private ActionUInt32 tlibSetMpuRegionSizeAndEnable;
+
+        [Import]
+        private FuncUInt32 tlibGetMpuRegionSizeAndEnable;
+
+        [Import]
+        private ActionUInt32 tlibSetMpuRegionNumber;
+
+        [Import]
+        private FuncUInt32 tlibGetMpuRegionNumber;
+
+        [Import]
+        private ActionInt32 tlibSetFpuInterruptNumber;
 
         [Import]
         private FuncUInt32 tlibGetInterruptVectorBase;

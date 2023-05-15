@@ -76,20 +76,50 @@ namespace Antmicro.Renode.Peripherals.Network
             {
                 return result;
             }
+            // If we failed to parse this enum as a string above, and SmartParser also failed to parse it
+            // as a number, this means the argument itself is invalid.
+            if(parameterType.IsEnum)
+            {
+                throw new ArgumentException($"Enum argument '{argument}' is invalid");
+            }
+
             // If none of the parsers covered this parameter, this is a model implementation error.
             throw new NotSupportedException($"No argument parser found for {parameterType.FullName}");
         }
 
-        private object[] ParseArguments(string argumentsString, IEnumerable<Type> parameterTypes)
+        private object[] ParseArguments(string argumentsString, IEnumerable<ParameterInfo> parameters)
         {
-            return argumentsString.Split(',')
-                .Zip(parameterTypes, (arg, type) => ParseArgument(arg.Trim(), type))
-                .ToArray();
+            var parameterTypes = parameters.Select(p => p.ParameterType);
+            Type arrayParameterType = null;
+            var lastParameter = parameters.LastOrDefault();
+            if(lastParameter?.IsDefined(typeof(ParamArrayAttribute)) ?? false)
+            {
+                arrayParameterType = lastParameter.ParameterType.GetElementType();
+                parameterTypes = parameterTypes.Take(parameterTypes.Count() - 1);
+            }
+
+            var arguments = argumentsString.Split(',');
+            var parsedArguments = arguments.Zip(parameterTypes, (arg, type) => ParseArgument(arg.Trim(), type));
+            if(arrayParameterType != null)
+            {
+                var arrayElements = arguments
+                    .Skip(parsedArguments.Count())
+                    .Select(arg => ParseArgument(arg.Trim(), arrayParameterType)).ToArray();
+
+                // We make a new array and copy into it so that we get (for example)
+                // int[] or string[] as appropriate. arrayElements is always an object[].
+                var arrayArgument = Array.CreateInstance(arrayParameterType, arrayElements.Length);
+                Array.Copy(arrayElements, arrayArgument, arrayElements.Length);
+                parsedArguments = parsedArguments.Append(new [] { arrayArgument } );
+            }
+            return parsedArguments.ToArray();
         }
 
         private Dictionary<Type, Func<string, object>> GetArgumentParsers()
         {
-            return this.GetType().GetMethodsWithAttribute<ArgumentParserAttribute>()
+            // We don't inherit the [ArgumentParser] attribute in order to allow "hiding" parsers
+            // in subclasses by overriding them and not marking them with [ArgumentParser]
+            return this.GetType().GetMethodsWithAttribute<ArgumentParserAttribute>(inheritAttribute: false)
                 .Select(ma => ma.Method)
                 .ToDictionary<MethodInfo, Type, Func<string, object>>(m => m.ReturnType, m =>
                 {

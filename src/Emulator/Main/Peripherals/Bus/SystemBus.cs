@@ -40,7 +40,7 @@ namespace Antmicro.Renode.Peripherals.Bus
     [Icon("sysbus")]
     [ControllerMask(typeof(IPeripheral))]
     public sealed partial class SystemBus : IBusController, IPeripheralContainer<IBusPeripheral, BusRangeRegistration>, IPeripheralRegister<IKnownSize, BusPointRegistration>,
-        IPeripheralRegister<ICPU, CPURegistrationPoint>, IDisposable, IPeripheral, IPeripheralRegister<IBusPeripheral, BusMultiRegistration>
+        IPeripheralRegister<ICPU, CPURegistrationPoint>, IDisposable, IPeripheral, IPeripheralRegister<IBusPeripheral, BusMultiRegistration>, ICanLoadFiles
     {
         internal SystemBus(Machine machine)
         {
@@ -53,6 +53,22 @@ namespace Antmicro.Renode.Peripherals.Bus
             hooksOnWrite = new Dictionary<ulong, List<BusHookHandler>>();
             InitStructures();
             this.Log(LogLevel.Info, "System bus created.");
+        }
+
+        public void LoadFileChunks(string path, IEnumerable<FileChunk> chunks, ICPU cpu)
+        {
+            ulong minAddr = ulong.MaxValue;
+
+            foreach(FileChunk chunk in chunks)
+            {
+                var chunkData = chunk.Data.ToArray();
+                WriteBytes(chunkData, chunk.OffsetToLoad, chunkData.Length, context: cpu);
+                minAddr = Math.Min(minAddr, chunk.OffsetToLoad);
+            }
+
+            AddFingerprint(path);
+            UpdateLowestLoadedAddress(minAddr);
+            this.DebugLog(path + " File loaded.");
         }
 
         public void Unregister(IBusPeripheral peripheral)
@@ -130,7 +146,13 @@ namespace Antmicro.Renode.Peripherals.Bus
                 idByCpu.Add(cpu, registrationPoint.Slot.Value);
                 if(cpu is ICPUWithMappedMemory memoryMappedCpu)
                 {
-                    foreach(var mapping in mappingsForPeripheral.SelectMany(x => x.Value).Where(x => x.Context == null || x.Context == cpu))
+                    foreach(var mapping in mappingsForPeripheral.SelectMany(x => x.Value)
+                            .Where(x => x.Context == null || x.Context == cpu)
+                            // Start from the highest address to reduce the number of reallocations in CPU.
+                            // Tlib tracks pages in the phys_dirty structure that covers the whole memory range.
+                            // This structure is reallocated whenever a segment at a higher address is registered.
+                            // Thus, when starting with the highest offset, we don't need to reallocate.
+                            .OrderByDescending(x => x.StartingOffset))
                     {
                         memoryMappedCpu.MapMemory(mapping);
                     }
@@ -601,131 +623,6 @@ namespace Antmicro.Renode.Peripherals.Bus
             UpdateLowestLoadedAddress(uImage.LoadAddress);
         }
 
-        public void LoadBinary(ReadFilePath fileName, ulong loadPoint, ICPU cpu = null)
-        {
-            const int bufferSize = 100 * 1024;
-            this.DebugLog("Loading binary {0} at 0x{1:X}.", fileName, loadPoint);
-            try
-            {
-                using(var reader = new FileStream(fileName, FileMode.Open, FileAccess.Read))
-                {
-                    var buffer = new byte[bufferSize];
-                    var written = 0UL;
-                    var read = 0;
-                    while((read = reader.Read(buffer, 0, buffer.Length)) > 0)
-                    {
-                        WriteBytes(buffer, loadPoint + written, read, context: cpu);
-                        written += (ulong)read;
-                    }
-                }
-            }
-            catch(IOException e)
-            {
-                throw new RecoverableException(string.Format("Exception while loading file {0}: {1}", fileName, e.Message));
-            }
-            AddFingerprint(fileName);
-            UpdateLowestLoadedAddress(loadPoint);
-            this.DebugLog("Binary loaded.");
-        }
-
-        public void LoadHEX(ReadFilePath fileName, IInitableCPU cpu = null)
-        {
-            string line;
-            int lineNum = 1;
-            ulong extendedTargetAddress = 0;
-            ulong minAddr = ulong.MaxValue;
-            bool endOfFileReached = false;
-
-            try
-            {
-                this.DebugLog("Loading HEX {0}.", fileName);
-                using(var file = new System.IO.StreamReader(fileName))
-                {
-                    while((line = file.ReadLine()) != null)
-                    {
-                        if(endOfFileReached)
-                        {
-                            throw new RecoverableException($"Unexpected data after the end of file marker at line #{lineNum}");
-                        }
-
-                        if(line.Length < 11)
-                        {
-                            throw new RecoverableException($"Line is too short error at line #{lineNum}.");
-                        }
-                        if(line[0] != ':'
-                            || !int.TryParse(line.Substring(1, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var length)
-                            || !ulong.TryParse(line.Substring(3, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var address)
-                            || !byte.TryParse(line.Substring(7, 2), NumberStyles.HexNumber,CultureInfo.InvariantCulture, out var type))
-                        {
-                            throw new RecoverableException($"Parsing error at line #{lineNum}: {line}. Could not parse header");
-                        }
-
-                        // this does not include the final CRC
-                        if(line.Length < 9 + length * 2)
-                        {
-                            throw new RecoverableException($"Parsing error at line #{lineNum}: {line}. Line too short");
-                        }
-
-                        switch((HexRecordType)type)
-                        {
-                            case HexRecordType.Data:
-                                var targetAddr = (extendedTargetAddress << 16) | address;
-                                var pos = 9;
-                                var buffer = new byte[length];
-                                for(var i = 0; i < length; i++, pos += 2)
-                                {
-                                    if(!byte.TryParse(line.Substring(pos, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out buffer[i]))
-                                    {
-                                        throw new RecoverableException($"Parsing error at line #{lineNum}: {line}. Could not parse bytes");
-                                    }
-                                }
-                                WriteBytes(buffer, targetAddr, length, context: cpu);
-                                minAddr = Math.Min(minAddr, targetAddr);
-                                this.DebugLog("Writing {0} bytes at 0x{1:X}", length, targetAddr);
-                                break;
-
-                            case HexRecordType.ExtendedLinearAddress:
-                                if(!ulong.TryParse(line.Substring(9, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out extendedTargetAddress))
-                                {
-                                    throw new RecoverableException($"Parsing error at line #{lineNum}: {line}. Could not parse address");
-                                }
-                                break;
-
-                            case HexRecordType.StartLinearAddress:
-                                if(!ulong.TryParse(line.Substring(9, 8), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var startingAddress))
-                                {
-                                    throw new RecoverableException($"Parsing error at line #{lineNum}: {line}. Could not parse starting address");
-                                }
-
-                                if(cpu != null)
-                                {
-                                    this.Log(LogLevel.Debug, "Setting PC to 0x{0:X}", startingAddress);
-                                    cpu.PC = startingAddress;
-                                }
-                                break;
-
-                            case HexRecordType.EndOfFile:
-                                endOfFileReached = true;
-                                break;
-
-                            default:
-                                this.Log(LogLevel.Warning, "Unexpected HEX record {0}: {1}", (HexRecordType)type, line);
-                                break;
-                        }
-                        lineNum++;
-                    }
-                }
-            }
-            catch(IOException e)
-            {
-                throw new RecoverableException($"Exception while loading file {fileName}: {(e.Message)}");
-            }
-
-            AddFingerprint(fileName);
-            UpdateLowestLoadedAddress(minAddr);
-            this.DebugLog("HEX loaded.");
-        }
-
         public IEnumerable<BinaryFingerprint> GetLoadedFingerprints()
         {
             return binaryFingerprints.ToArray();
@@ -736,18 +633,24 @@ namespace Antmicro.Renode.Peripherals.Bus
             return new BinaryFingerprint(fileName);
         }
 
+         public IEnumerable<ulong> GetAllSymbolAddresses(string symbolName)
+         {
+             IReadOnlyCollection<Symbol> symbols;
+             if(!Lookup.TryGetSymbolsByName(symbolName, out symbols))
+             {
+                 throw new RecoverableException(string.Format("No symbol with name `{0}` found.", symbolName));
+             }
+            return symbols.Select(symbol => symbol.Start.RawValue);
+        }
+
         public ulong GetSymbolAddress(string symbolName)
         {
-            IReadOnlyCollection<Symbol> symbols;
-            if(!Lookup.TryGetSymbolsByName(symbolName, out symbols))
+            var addresses = GetAllSymbolAddresses(symbolName).ToArray();
+            if(addresses.Length > 1)
             {
-                throw new RecoverableException(string.Format("No symbol with name `{0}` found.", symbolName));
+                throw new RecoverableException(string.Format("Ambiguous symbol name: `{0}`. Use GetAllSymbolAddresses to get all possible addresses.", symbolName));
             }
-            if(symbols.Count > 1)
-            {
-                throw new RecoverableException(string.Format("Ambiguous symbol name: `{0}`.", symbolName));
-            }
-            return symbols.First().Start.RawValue;
+            return addresses[0];
 
         }
 
@@ -1677,8 +1580,9 @@ namespace Antmicro.Renode.Peripherals.Bus
                     {
                         mappingsForPeripheral[owner] = mappingsList;
                     }
-                    // old mappings are given to the CPU in the moment of its registration
-                    foreach(var mapping in mappingsList)
+                    // Old mappings are given to the CPU in the moment of its registration.
+                    // Starting from the highest offset to reduce the number of reallocations on the CPU side.
+                    foreach(var mapping in mappingsList.OrderByDescending(x => x.StartingOffset))
                     {
                         if(mapping.Context != null)
                         {
@@ -1943,16 +1847,6 @@ namespace Antmicro.Renode.Peripherals.Bus
         {
             public string Name;
             public ulong DefaultValue;
-        }
-
-        private enum HexRecordType
-        {
-            Data = 0,
-            EndOfFile = 1,
-            ExtendedSegmentAddress = 2,
-            StartSegmentAddress = 3,
-            ExtendedLinearAddress = 4,
-            StartLinearAddress = 5
         }
     }
 }

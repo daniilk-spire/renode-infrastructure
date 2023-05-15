@@ -20,7 +20,8 @@ namespace Antmicro.Renode.Peripherals.SPI
     public class GenericSpiFlash : ISPIPeripheral, IGPIOReceiver
     {
         public GenericSpiFlash(MappedMemory underlyingMemory, byte manufacturerId, byte memoryType,
-            bool writeStatusCanSetWriteEnable = true)
+            bool writeStatusCanSetWriteEnable = true, byte extendedDeviceId = DefaultExtendedDeviceID,
+            byte deviceConfiguration = DefaultDeviceConfiguration, byte remainingIdBytes = DefaultRemainingIDBytes)
         {
             if(!Misc.IsPowerOfTwo((ulong)underlyingMemory.Size))
             {
@@ -28,7 +29,7 @@ namespace Antmicro.Renode.Peripherals.SPI
             }
 
             volatileConfigurationRegister = new ByteRegister(this, 0xfb).WithFlag(3, name: "XIP");
-            nonVolatileConfigurationRegister = new WordRegister(this, 0xffff).WithFlag(0, out numberOfAddressBytes, name: "addressWith3Bytes");
+            nonVolatileConfigurationRegister = new WordRegister(this, 0xffff).WithEnumField<WordRegister, AddressingMode>(0, 1, out addressingMode, name: "addressWith3Bytes");
             enhancedVolatileConfigurationRegister = new ByteRegister(this, 0xff)
                 .WithValueField(0, 3, name: "Output driver strength")
                 .WithReservedBits(3, 1)
@@ -42,7 +43,7 @@ namespace Antmicro.Renode.Peripherals.SPI
                 .WithFlag(1, out enable, writeStatusCanSetWriteEnable ? FieldMode.Read | FieldMode.Write : FieldMode.Read, name: "writeEnableLatch");
             configurationRegister = new WordRegister(this);
             flagStatusRegister = new ByteRegister(this)
-                .WithFlag(0, FieldMode.Read, valueProviderCallback: _ => numberOfAddressBytes.Value, name: "Addressing")
+                .WithEnumField<ByteRegister, AddressingMode>(0, 1, FieldMode.Read, valueProviderCallback: _ => addressingMode.Value, name: "Addressing")
                 //other bits indicate either protection errors (not implemented) or pending operations (they already finished)
                 .WithReservedBits(3, 1)
                 .WithFlag(7, FieldMode.Read, valueProviderCallback: _ => true, name: "ProgramOrErase");
@@ -52,8 +53,13 @@ namespace Antmicro.Renode.Peripherals.SPI
 
             this.manufacturerId = manufacturerId;
             this.memoryType = memoryType;
+            this.capacityCode = GetCapacityCode();
+            this.remainingIdBytes = remainingIdBytes;
+            this.extendedDeviceId = extendedDeviceId;
+            this.deviceConfiguration = deviceConfiguration;
 
             deviceData = GetDeviceData();
+            SFDPSignature = GetSFDPSignature();
         }
 
         public void OnGPIO(int number, bool value)
@@ -149,7 +155,7 @@ namespace Antmicro.Renode.Peripherals.SPI
             }
         }
 
-        private byte[] GetDeviceData()
+        protected virtual byte GetCapacityCode()
         {
             // capacity code:
             // 0x10 -  64 KB
@@ -172,13 +178,34 @@ namespace Antmicro.Renode.Peripherals.SPI
                 capacityCode = (byte)((BitHelper.GetMostSignificantSetBitIndex((ulong)underlyingMemory.Size) - 26) + 0x20);
             }
 
+            return capacityCode;
+        }
+
+        protected virtual byte[] GetSFDPSignature()
+        {
+            return DefaultSFDPSignature;
+        }
+
+        protected virtual int GetDummyBytes(Commands command)
+        {
+            switch(command)
+            {
+                case Commands.FastRead:
+                    return 1;
+                default:
+                    return 0;
+            }
+        }
+
+        private byte[] GetDeviceData()
+        {
             var data = new byte[20];
             data[0] = manufacturerId;
             data[1] = memoryType;
             data[2] = capacityCode;
-            data[3] = RemainingIDBytes;
-            data[4] = ExtendedDeviceID;
-            data[5] = DeviceConfiguration;
+            data[3] = remainingIdBytes;
+            data[4] = extendedDeviceId;
+            data[5] = deviceConfiguration;
             // unique ID code (bytes 7:20)
             return data;
         }
@@ -187,6 +214,7 @@ namespace Antmicro.Renode.Peripherals.SPI
         {
             currentOperation.Operation = DecodedOperation.OperationType.None;
             currentOperation.State = DecodedOperation.OperationState.HandleCommand;
+            currentOperation.DummyBytesRemaining = GetDummyBytes((Commands)firstByte);
             switch(firstByte)
             {
                 case (byte)Commands.ReadID:
@@ -216,7 +244,20 @@ namespace Antmicro.Renode.Peripherals.SPI
                 case (byte)Commands.DtrQuadInputOutputFastRead:
                 case (byte)Commands.QuadInputOutputWordRead:
                     currentOperation.Operation = DecodedOperation.OperationType.Read;
-                    currentOperation.AddressLength = numberOfAddressBytes.Value ? 3 : 4;
+                    currentOperation.AddressLength = NumberOfAddressBytes;
+                    currentOperation.State = DecodedOperation.OperationState.AccumulateCommandAddressBytes;
+                    break;
+                case (byte)Commands.Read4byte:
+                case (byte)Commands.FastRead4byte:
+                case (byte)Commands.DualOutputFastRead4byte:
+                case (byte)Commands.DualInputOutputFastRead4byte:
+                case (byte)Commands.QuadOutputFastRead4byte:
+                case (byte)Commands.QuadInputOutputFastRead4byte:
+                case (byte)Commands.DtrFastRead4byte:
+                case (byte)Commands.DtrDualInputOutputFastRead4byte:
+                case (byte)Commands.DtrQuadInputOutputFastRead4byte:
+                    currentOperation.Operation = DecodedOperation.OperationType.Read;
+                    currentOperation.AddressLength = 4;
                     currentOperation.State = DecodedOperation.OperationState.AccumulateCommandAddressBytes;
                     break;
                 case (byte)Commands.PageProgram:
@@ -225,7 +266,13 @@ namespace Antmicro.Renode.Peripherals.SPI
                 case (byte)Commands.QuadInputFastProgram:
                 case (byte)Commands.ExtendedQuadInputFastProgram:
                     currentOperation.Operation = DecodedOperation.OperationType.Program;
-                    currentOperation.AddressLength = numberOfAddressBytes.Value ? 3 : 4;
+                    currentOperation.AddressLength = NumberOfAddressBytes;
+                    currentOperation.State = DecodedOperation.OperationState.AccumulateCommandAddressBytes;
+                    break;
+                case (byte)Commands.PageProgram4byte:
+                case (byte)Commands.QuadInputFastProgram4byte:
+                    currentOperation.Operation = DecodedOperation.OperationType.Program;
+                    currentOperation.AddressLength = 4;
                     currentOperation.State = DecodedOperation.OperationState.AccumulateCommandAddressBytes;
                     break;
                 case (byte)Commands.WriteEnable:
@@ -239,31 +286,51 @@ namespace Antmicro.Renode.Peripherals.SPI
                 case (byte)Commands.SubsectorErase4kb:
                     currentOperation.Operation = DecodedOperation.OperationType.Erase;
                     currentOperation.EraseSize = DecodedOperation.OperationEraseSize.Subsector4K;
-                    currentOperation.AddressLength = numberOfAddressBytes.Value ? 3 : 4;
+                    currentOperation.AddressLength = NumberOfAddressBytes;
                     currentOperation.State = DecodedOperation.OperationState.AccumulateNoDataCommandAddressBytes;
                     break;
                 case (byte)Commands.SubsectorErase32kb:
                     currentOperation.Operation = DecodedOperation.OperationType.Erase;
                     currentOperation.EraseSize = DecodedOperation.OperationEraseSize.Subsector32K;
-                    currentOperation.AddressLength = numberOfAddressBytes.Value ? 3 : 4;
+                    currentOperation.AddressLength = NumberOfAddressBytes;
                     currentOperation.State = DecodedOperation.OperationState.AccumulateNoDataCommandAddressBytes;
                     break;
                 case (byte)Commands.SectorErase:
                     currentOperation.Operation = DecodedOperation.OperationType.Erase;
                     currentOperation.EraseSize = DecodedOperation.OperationEraseSize.Sector;
-                    currentOperation.AddressLength = numberOfAddressBytes.Value ? 3 : 4;
+                    currentOperation.AddressLength = NumberOfAddressBytes;
                     currentOperation.State = DecodedOperation.OperationState.AccumulateNoDataCommandAddressBytes;
                     break;
                 case (byte)Commands.DieErase:
                     currentOperation.Operation = DecodedOperation.OperationType.Erase;
                     currentOperation.EraseSize = DecodedOperation.OperationEraseSize.Die;
-                    currentOperation.AddressLength = numberOfAddressBytes.Value ? 3 : 4;
+                    currentOperation.AddressLength = NumberOfAddressBytes;
                     currentOperation.State = DecodedOperation.OperationState.AccumulateNoDataCommandAddressBytes;
                     break;
                 case (byte)Commands.BulkErase:
                 case (byte)Commands.ChipErase:
                     this.Log(LogLevel.Noisy, "Performing bulk/chip erase");
                     EraseChip();
+                    break;
+                case (byte)Commands.SubsectorErase4byte4kb:
+                    currentOperation.Operation = DecodedOperation.OperationType.Erase;
+                    currentOperation.EraseSize = DecodedOperation.OperationEraseSize.Subsector4K;
+                    currentOperation.AddressLength = 4;
+                    currentOperation.State = DecodedOperation.OperationState.AccumulateNoDataCommandAddressBytes;
+                    break;
+                case (byte)Commands.SectorErase4byte:
+                    currentOperation.Operation = DecodedOperation.OperationType.Erase;
+                    currentOperation.EraseSize = DecodedOperation.OperationEraseSize.Sector;
+                    currentOperation.AddressLength = 4;
+                    currentOperation.State = DecodedOperation.OperationState.AccumulateNoDataCommandAddressBytes;
+                    break;
+                case (byte)Commands.Enter4byteAddressMode:
+                    this.Log(LogLevel.Noisy, "Entering 4-byte address mode");
+                    addressingMode.Value = AddressingMode.FourByte;
+                    break;
+                case (byte)Commands.Exit4byteAddressMode:
+                    this.Log(LogLevel.Noisy, "Exiting 4-byte address mode");
+                    addressingMode.Value = AddressingMode.ThreeByte;
                     break;
                 case (byte)Commands.ReadStatusRegister:
                     currentOperation.Operation = DecodedOperation.OperationType.ReadRegister;
@@ -325,14 +392,17 @@ namespace Antmicro.Renode.Peripherals.SPI
         private byte HandleCommand(byte data)
         {
             byte result = 0;
+            if(currentOperation.DummyBytesRemaining > 0)
+            {
+                currentOperation.DummyBytesRemaining--;
+                this.Log(LogLevel.Noisy, "Handling dummy byte in {0} operation, {1} remaining after this one",
+                    currentOperation.Operation, currentOperation.DummyBytesRemaining);
+                return result;
+            }
+
             switch(currentOperation.Operation)
             {
                 case DecodedOperation.OperationType.ReadFast:
-                    // handle dummy byte and switch to read
-                    currentOperation.Operation = DecodedOperation.OperationType.Read;
-                    currentOperation.CommandBytesHandled--;
-                    this.Log(LogLevel.Noisy, "Handling dummy byte in ReadFast operation");
-                    break;
                 case DecodedOperation.OperationType.Read:
                     result = ReadFromMemory();
                     break;
@@ -583,59 +653,41 @@ namespace Antmicro.Renode.Peripherals.SPI
             return  underlyingMemory.ReadByte(position);
         }
 
+        // The addressingMode field is 1-bit wide, so a conditional expression covers all possible cases
+        private int NumberOfAddressBytes => addressingMode.Value == AddressingMode.ThreeByte ? 3 : 4;
+
         private DecodedOperation currentOperation;
         private uint temporaryConfiguration; //this should be an ushort, but due to C# type promotions it's easier to use uint
 
         private readonly byte[] deviceData;
+        private readonly byte[] SFDPSignature;
         private readonly IFlagRegisterField enable;
         private readonly ByteRegister flagStatusRegister;
-        private readonly IFlagRegisterField numberOfAddressBytes;
+        private readonly IEnumRegisterField<AddressingMode> addressingMode;
         private readonly ByteRegister volatileConfigurationRegister;
         private readonly ByteRegister enhancedVolatileConfigurationRegister;
         private readonly WordRegister nonVolatileConfigurationRegister;
         private readonly MappedMemory underlyingMemory;
         private readonly byte manufacturerId;
         private readonly byte memoryType;
-
+        private readonly byte capacityCode;
+        private readonly byte remainingIdBytes;
+        private readonly byte extendedDeviceId;
+        private readonly byte deviceConfiguration;
         private const byte EmptySegment = 0xff;
-        private const byte RemainingIDBytes = 0x10;
-        private const byte DeviceConfiguration = 0x0;   // standard
         private const byte DeviceGeneration = 0x1;      // 2nd generation
-        private const byte ExtendedDeviceID = DeviceGeneration << 6;
+        private const byte DefaultRemainingIDBytes = 0x10;
+        private const byte DefaultExtendedDeviceID = DeviceGeneration << 6;
+        private const byte DefaultDeviceConfiguration = 0x0;   // standard
 
-        // Based on TN-25-06 sepicification
-        private readonly byte[] SFDPSignature = new byte[] 
+        // Dummy SFDP header: 0 parameter tables, one empty required
+        private readonly byte[] DefaultSFDPSignature = new byte[]
         {
-            0x53, 0x46, 0x44, 0x50, 0x06, 0x01, 0x01, 0xFF, 0x00, 0x06,
-            0x01, 0x10, 0x30, 0x00, 0x00, 0xFF ,0x84, 0x00, 0x01, 0x02,
-            0x80, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-            // Values below are not consistent with the spec
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            0x53, 0x46, 0x44, 0x50, 0x06, 0x01, 0x00, 0xFF,
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
         };
 
-        private enum Commands : byte
+        protected enum Commands : byte
         {
             // Software RESET Operations
             ResetEnable = 0x66,
@@ -761,6 +813,12 @@ namespace Antmicro.Renode.Peripherals.SPI
             // ADVANCED FUNCTION INTERFACE Operations
             InterfaceActivation = 0x9B,
             CyclicRedundancyCheck = 0x27
+        }
+
+        private enum AddressingMode : byte
+        {
+            FourByte = 0x0,
+            ThreeByte = 0x1
         }
 
         private enum Register : uint

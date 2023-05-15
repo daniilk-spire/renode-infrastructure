@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
@@ -17,6 +17,7 @@ using Antmicro.Renode.Logging;
 using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Time;
 using Antmicro.Renode.Utilities.Collections;
+using System.Threading;
 
 namespace Antmicro.Renode.Core
 {
@@ -108,7 +109,16 @@ namespace Antmicro.Renode.Core
         public bool IsStarted
         {
             get { return isStarted; }
-            private set { isStarted = value; }
+            private set
+            {
+                if(isStarted == value)
+                {
+                    return;
+                }
+
+                isStarted = value;
+                IsStartedChanged?.Invoke(this, value);
+            }
         }
 
         [Transient]
@@ -260,9 +270,12 @@ namespace Antmicro.Renode.Core
 
         public void StartAll()
         {
-            IsStarted = true;
-            InnerStartAll();
-            MasterTimeSource.Start();
+            lock(machLock)
+            {
+                InnerStartAll();
+                MasterTimeSource.Start();
+                IsStarted = true;
+            }
 
             System.Threading.Thread.Sleep(100);
         }
@@ -294,6 +307,32 @@ namespace Antmicro.Renode.Core
         public IDisposable ObtainPausedState()
         {
             return new PausedState(this);
+        }
+
+        public AutoResetEvent GetStartedStateChangedEvent(bool requiredStartedState, bool waitForTransition = true)
+        {
+            var evt = new AutoResetEvent(false);
+            lock(machLock)
+            {
+                if(IsStarted == requiredStartedState && !waitForTransition)
+                {
+                    evt.Set();
+                    return evt;
+                }
+
+                Action<Emulation, bool> startedChanged = null;
+                startedChanged = (e, started) =>
+                {
+                    if(started == requiredStartedState)
+                    {
+                        e.IsStartedChanged -= startedChanged;
+                        evt.Set();
+                    }
+                };
+
+                IsStartedChanged += startedChanged;
+                return evt;
+            }
         }
 
         public ILogger CurrentLogger { get; private set; }
@@ -605,6 +644,9 @@ namespace Antmicro.Renode.Core
         public event Action<Machine> MachineAdded;
         [field: Transient]
         public event Action<Machine> MachineRemoved;
+
+        [field: Transient]
+        public event Action<Emulation, bool> IsStartedChanged;
 
         [Constructor]
         private CachingFileFetcher fileFetcher;

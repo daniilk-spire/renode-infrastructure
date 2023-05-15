@@ -1146,6 +1146,24 @@ namespace Antmicro.Renode.Peripherals.CPU
             CyclesPerInstruction = 1;
         }
 
+        protected override ulong SkipInstructions
+        {
+            get => base.SkipInstructions;
+            set
+            {
+                if(!OnPossessedThread)
+                {
+                    this.Log(LogLevel.Error, "Changing SkipInstructions should be only done on CPU thread, ignoring");
+                    return;
+                }
+
+                base.SkipInstructions = value;
+                // This will be imprecise when we change SkipInstructions before end of the translation block
+                // as TlibSetReturnRequest doesn't finish current translation block
+                TlibSetReturnRequest();
+            }
+        }
+
         [Transient]
         private ActionUInt64 onTranslationBlockFetch;
         private byte[] cpuState;
@@ -1309,7 +1327,7 @@ namespace Antmicro.Renode.Peripherals.CPU
                     throw new InvalidOperationException($"Trying to reallocate a pointer at 0x{oldPointer:X} which wasn't allocated by this memory manager.");
                 }
                 var ptr = Marshal.ReAllocHGlobal(oldPointer, (IntPtr)newSize); // before asking WTF here look at msdn
-                parent.NoisyLog("Reallocated a pointer: old size {0}B at 0x{1:X}, new size {2}B at 0x{3:X}.", Misc.NormalizeBinary(newSize), oldPointer, Misc.NormalizeBinary(oldSize), ptr);
+                parent.NoisyLog("Reallocated a pointer: old size {0}B at 0x{1:X}, new size {2}B at 0x{3:X}.", Misc.NormalizeBinary(oldSize), oldPointer, Misc.NormalizeBinary(newSize), ptr);
                 Interlocked.Add(ref allocated, newSize - oldSize);
                 ourPointers.TryAdd(ptr, newSize);
                 return ptr;
@@ -1697,6 +1715,7 @@ namespace Antmicro.Renode.Peripherals.CPU
 
         [Import]
         protected ActionUInt64 TlibResetExecutedInstructions;
+
         [Import]
         private ActionUInt32 TlibSetInterruptBeginHookPresent;
 

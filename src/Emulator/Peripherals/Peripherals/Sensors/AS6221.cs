@@ -27,7 +27,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
 
             DefineRegisters();
 
-            conversionTimer = new LimitTimer(machine.ClockSource, 1, this, "conv", eventEnabled: true, enabled: true);
+            conversionTimer = new LimitTimer(machine.ClockSource, 1, this, "conv", autoUpdate: true, eventEnabled: true, enabled: true);
             conversionTimer.LimitReached += HandleConversion;
 
             Reset();
@@ -99,6 +99,8 @@ namespace Antmicro.Renode.Peripherals.Sensors
         public void Reset()
         {
             RegistersCollection.Reset();
+            conversionTimer.Reset();
+
             registerAddress = null;
             state = States.Idle;
 
@@ -199,7 +201,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
                     valueProviderCallback: _ => consecutiveFaultsThreshold - 1,
                     writeCallback: (_, value) =>
                     {
-                        consecutiveFaultsThreshold = value + 1;
+                        consecutiveFaultsThreshold = (uint)value + 1;
                         consecutiveFaults = 0;
                     })
                 .WithReservedBits(13, 2)

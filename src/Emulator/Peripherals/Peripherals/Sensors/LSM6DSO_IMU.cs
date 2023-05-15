@@ -39,7 +39,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
             }
         }
 
-        public void FeedAccelerationSamplesFromRESD(string path, uint channel = 0, ulong startTime = 0, ulong sampleOffsetTime = 0)
+        public void FeedAccelerationSamplesFromRESD(string path, uint channel = 0, ulong startTime = 0, long sampleOffsetTime = 0)
         {
             accelerometerResdStream = this.CreateRESDStream<AccelerationSample>(path, channel);
             accelerometerFeederThread?.Stop();
@@ -76,7 +76,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
             }
         }
 
-        public void FeedAngularRateSamplesFromRESD(string path, uint channel = 0, ulong startTime = 0, ulong sampleOffsetTime = 0)
+        public void FeedAngularRateSamplesFromRESD(string path, uint channel = 0, ulong startTime = 0, long sampleOffsetTime = 0)
         {
             gyroResdStream = this.CreateRESDStream<AngularRateSample>(path, channel);
             gyroFeederThread?.Stop();
@@ -165,7 +165,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
         }
 
         public bool FifoOverrunStatus => commonFifo.OverrunOccurred;
-        public uint FifoWatermarkThreshold => fifoThresholdBits0_7.Value | (fifoThresholdBit8.Value ? 0x100u : 0x0u);
+        public uint FifoWatermarkThreshold => (uint)fifoThresholdBits0_7.Value | (fifoThresholdBit8.Value ? 0x100u : 0x0u);
         public bool IsAccelerometerDataBatchedInFifo => IsDataRateEnabledAndDefined(accelerometerFifoBatchingDataRateSelection.Value);
         public bool IsAccelerometerPoweredOn => IsDataRateEnabledAndDefined(accelerometerOutputDataRateSelection.Value);
         public bool IsGyroscopeDataBatchedInFifo => IsDataRateEnabledAndDefined(gyroscopeFifoBatchingDataRateSelection.Value);
@@ -692,6 +692,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
             {
                 owner.Log(LogLevel.Debug, "Resetting FIFO");
 
+                queue.Clear();
                 accelerationSample = null;
                 angularRateSample = null;
                 mode = FifoModes.Bypass;

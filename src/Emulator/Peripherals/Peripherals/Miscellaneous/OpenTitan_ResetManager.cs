@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -149,24 +149,14 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private void ExecuteResetWithSkipped(ICollection<IPeripheral> toSkip)
         {
             // This method is intended to run only as a result of memory access from translated code.
-            if(!machine.SystemBus.TryGetCurrentCPU(out var icpu))
-            {
-                this.Log(LogLevel.Error, "Couldn't find the cpu requesting reset.");
-                return;
-            }
-            var cpu = icpu as TranslationCPU;
-            if(cpu == null)
-            {
-                this.Log(LogLevel.Error, "Resetting for non TranslationCPU based CPUs is not implemented.");
-                return;
-            }
-            this.Log(LogLevel.Info, "Software reset started.");
-
-            if(!cpu.RequestTranslationBlockRestart())
+            if(!machine.TryRestartTranslationBlockOnCurrentCpu())
             {
                 this.Log(LogLevel.Error, "Software reset failed.");
                 return;
             }
+
+            // If the translation block restart succeeded, we know GetCurrentCPU is safe
+            var cpu = machine.SystemBus.GetCurrentCPU();
 
             machine.RequestResetInSafeState(() =>
             {
@@ -273,7 +263,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 .WithValueField(0, 8, out softwareControllableResetsWriteEnableMask, FieldMode.Read | FieldMode.WriteZeroToClear, name: "EN")
                 .WithReservedBits(8, 24);
             Registers.SoftwareControllableResets.Define(this, 0xff)
-                .WithValueField(0, 8, writeCallback: (_, val) => { SetResetHolds(val); }, name: "VAL")
+                .WithValueField(0, 8, writeCallback: (_, val) => { SetResetHolds((uint)val); }, name: "VAL")
                 .WithReservedBits(8, 24);
             Registers.ErrorCode.Define(this)
                 .WithTaggedFlag("REG_INTG_ERR", 0)

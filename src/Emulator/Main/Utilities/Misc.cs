@@ -102,10 +102,10 @@ namespace Antmicro.Renode.Utilities
             return t.GetMethods(DefaultBindingFlags);
         }
 
-        public static IEnumerable<MethodWithAttribute<T>> GetMethodsWithAttribute<T>(this Type type) where T : Attribute
+        public static IEnumerable<MethodWithAttribute<T>> GetMethodsWithAttribute<T>(this Type type, bool inheritAttribute = true) where T : Attribute
         {
             return type.GetAllMethods()
-                .Select(method => new MethodWithAttribute<T>(method, (T)method.GetCustomAttribute(typeof(T), true)))
+                .Select(method => new MethodWithAttribute<T>(method, (T)method.GetCustomAttribute(typeof(T), inheritAttribute)))
                 .Where(m => m.Attribute != null);
         }
 
@@ -642,17 +642,21 @@ namespace Antmicro.Renode.Utilities
 
         public static bool TryGetRootDirectory(out string directory)
         {
-#if PLATFORM_LINUX
-            if(AssemblyHelper.BundledAssembliesCount > 0)
+            if(TryGetRootDirectory(AppDomain.CurrentDomain.BaseDirectory, out directory))
             {
-                // we are bundled, so we need a custom way of detecting the root directory
-                var thisFile = new StringBuilder(2048);
-                Mono.Unix.Native.Syscall.readlink("/proc/self/exe", thisFile);
-                return TryGetRootDirectory(Path.GetDirectoryName(thisFile.ToString()), out directory);
+                // Firstly, try to resolve root directory starting from
+                // directory containing current assembly. This should
+                // work when Renode was run after being manually compiled from the source code.
+                return true;
             }
-#endif
 
-            return TryGetRootDirectory(AppDomain.CurrentDomain.BaseDirectory, out directory);
+            // If we couldn't find root directory in previous step, try again
+            // starting from directory of main process' executable. This is fallback for
+            // when Renode was executed from self-contained binary.
+            var currentProcess = Process.GetCurrentProcess();
+            var currentModulePath = Path.GetFullPath(currentProcess.MainModule.FileName);
+            var rootDirectory = Path.GetDirectoryName(currentModulePath);
+            return TryGetRootDirectory(rootDirectory, out directory);
         }
 
         public static bool TryGetRootDirectory(string baseDirectory, out string directory)
@@ -1466,6 +1470,21 @@ namespace Antmicro.Renode.Utilities
                 }
             }
             return count;
+        }
+
+        // Remaps a number from [inMin; inMax] to [outMin; outMax].
+        // Supports "reversing the direction", like remapping [0; 10] to [1; -1].
+        // If the input is null or outside the input range, returns null.
+        public static decimal? RemapNumber(decimal? value, decimal inMin, decimal inMax, decimal outMin, decimal outMax)
+        {
+            if(value == null || value < inMin || value > inMax)
+            {
+                return null;
+            }
+
+            var inRangeLen = inMax - inMin;
+            var outRangeLen = outMax - outMin;
+            return (value - inMin) * outRangeLen / inRangeLen + outMin;
         }
 
         public static byte[] AsBytes(uint[] data)

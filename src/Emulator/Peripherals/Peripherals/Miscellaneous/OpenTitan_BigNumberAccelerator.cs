@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2022 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -30,6 +30,31 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         string KeyShare0 { get; set; }
         string KeyShare1 { get; set; }
         CoreError LastError { get; }
+    }
+
+    public static class BigIntegerHelpers
+    {
+        public static byte[] ToByteArray(this BigInteger bi, int width)
+        {
+            var array = bi.ToByteArray();
+            if(array.Length > width)
+            {
+                array = array.Take(width).ToArray();
+            }
+            else if(array.Length < width)
+            {
+                var fill = width - array.Length;
+                var lsb = array[array.Length - 1];
+                array = array.Concat(Enumerable.Repeat(lsb >= 0x80 ? (byte)0xff : (byte)0, fill)).ToArray();
+            }
+            return array;
+        }
+
+        public static string ToLongString(this BigInteger bi, int width)
+        {
+            var s = string.Join("", bi.ToByteArray(width).Reverse().Select(x => x.ToString("x2")));
+            return $"0x{s}";
+        }
     }
 
     public class OpenTitan_BigNumberAccelerator : BasicDoubleWordPeripheral, IKnownSize
@@ -104,8 +129,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
 
         public string GetWideRegister(int number, bool special)
         {
-            var res = core.GetWideRegister(number, special);
-            return res.ToString();
+            return core.GetWideRegister(number, special).ToLongString(32);
         }
 
         public long Size => 0x10000;
@@ -252,7 +276,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 register
                     .WithValueField(0, 32,
                                     valueProviderCallback: _ => instructionsMemory.ReadDoubleWord(regId * sizeof(uint)),
-                                    writeCallback: (_, val) => instructionsMemory.WriteDoubleWord(regId * sizeof(uint), val),
+                                    writeCallback: (_, val) => instructionsMemory.WriteDoubleWord(regId * sizeof(uint), (uint)val),
                                     name: $"InstructionMemoryAccess{regId}");
             });
 
@@ -261,7 +285,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 register
                     .WithValueField(0, 32,
                                     valueProviderCallback: _ => dataMemory.ReadDoubleWord(regId * sizeof(uint)),
-                                    writeCallback: (_, val) => dataMemory.WriteDoubleWord(regId * sizeof(uint), val),
+                                    writeCallback: (_, val) => dataMemory.WriteDoubleWord(regId * sizeof(uint), (uint)val),
                                     name: $"DataMemoryAccess{regId}");
             });
         }

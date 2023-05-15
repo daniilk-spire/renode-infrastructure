@@ -29,6 +29,7 @@ using Antmicro.Renode.UserInterface;
 using Antmicro.Renode.Utilities;
 using Antmicro.Renode.Utilities.Collections;
 using Antmicro.Renode.Utilities.GDB;
+using Microsoft.CSharp.RuntimeBinder;
 
 namespace Antmicro.Renode.Core
 {
@@ -467,6 +468,41 @@ namespace Antmicro.Renode.Core
             }
         }
 
+        public void PauseAndRequestEmulationPause(bool precise = false)
+        {
+            lock(pausingSync)
+            {
+                // Nothing to do if the emulation is already paused
+                if(!EmulationManager.Instance.CurrentEmulation.IsStarted)
+                {
+                    return;
+                }
+
+                // Precise mode is only available when this method is run on the CPU thread
+                // We only attempt to prepare the CPU for a precise pause if the machine is currently running
+                if(precise && !IsPaused)
+                {
+                    if(!TryRestartTranslationBlockOnCurrentCpu())
+                    {
+                        this.Log(LogLevel.Warning, "Failed to restart translation block for precise pause, " +
+                            "the pause will happen at the end of the current block");
+                    }
+                }
+
+                // We will pause this machine right now, but the whole emulation at the next sync point
+                Action pauseEmulation = null;
+                pauseEmulation = () =>
+                {
+                    EmulationManager.Instance.CurrentEmulation.PauseAll();
+                    LocalTimeSource.SinksReportedHook -= pauseEmulation;
+                };
+                LocalTimeSource.SinksReportedHook += pauseEmulation;
+
+                // Pause is harmless to call even if the machine is already paused
+                Pause();
+            }
+        }
+
         public void Reset()
         {
             lock(pausingSync)
@@ -495,7 +531,7 @@ namespace Antmicro.Renode.Core
             Action softwareRequestedReset = null;
             softwareRequestedReset = () =>
             {
-                LocalTimeSource.SinksReportedkHook -= softwareRequestedReset;
+                LocalTimeSource.SinksReportedHook -= softwareRequestedReset;
                 using(ObtainPausedState())
                 {
                     foreach(var peripheral in registeredPeripherals.Distinct().Where(p => p != this && !(unresetable?.Contains(p) ?? false)))
@@ -505,7 +541,7 @@ namespace Antmicro.Renode.Core
                 }
                 postReset?.Invoke();
             };
-            LocalTimeSource.SinksReportedkHook += softwareRequestedReset;
+            LocalTimeSource.SinksReportedHook += softwareRequestedReset;
         }
 
         public void RequestReset()
@@ -993,13 +1029,47 @@ namespace Antmicro.Renode.Core
             var currentTime = ElapsedVirtualTime.TimeElapsed;
             var startTime = currentTime + delay;
 
-            Action clockEntryHandler = () =>
+            // We can't do this in 1 assignment because we need to refer to clockEntryHandler
+            // within the body of the lambda
+            Action clockEntryHandler = null;
+            clockEntryHandler = () =>
             {
                 this.Log(LogLevel.Noisy, "{0}: Executing action scheduled at {1} (current time: {2})", name ?? "unnamed", startTime, currentTime);
                 action(currentTime);
+                if(!ClockSource.TryRemoveClockEntry(clockEntryHandler))
+                {
+                    this.Log(LogLevel.Error, "{0}: Failed to remove clock entry after running scheduled action", name ?? "unnamed");
+                }
             };
 
             ClockSource.AddClockEntry(new ClockEntry(delay.Ticks, (long)TimeInterval.TicksPerSecond, clockEntryHandler, this, name, workMode: WorkMode.OneShot));
+        }
+
+        // This method should only be called on the CPU thread
+        public bool TryRestartTranslationBlockOnCurrentCpu()
+        {
+            if(!SystemBus.TryGetCurrentCPU(out var icpu))
+            {
+                this.Log(LogLevel.Error, "Couldn't find the CPU requesting translation block restart.");
+                return false;
+            }
+
+            try
+            {
+                var cpu = (dynamic)icpu;
+                if(!cpu.RequestTranslationBlockRestart())
+                {
+                    Logger.LogAs(icpu, LogLevel.Error, "Failed to restart translation block.");
+                    return false;
+                }
+            }
+            catch(RuntimeBinderException)
+            {
+                Logger.LogAs(icpu, LogLevel.Warning, "Translation block restarting is not supported by '{0}'", icpu.GetType().FullName);
+                return false;
+            }
+
+            return true;
         }
 
         public Profiler Profiler { get; private set; }

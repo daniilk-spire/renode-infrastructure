@@ -1,11 +1,11 @@
 //
-// Copyright (c) 2010-2021 Antmicro
+// Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
 //
-﻿using System;
+using System;
 using Antmicro.Renode.Peripherals.Bus;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Core;
@@ -97,9 +97,9 @@ namespace Antmicro.Renode.Peripherals.DMA
 
         public void OnGPIO(int number, bool value)
         {
-            if(number != 0)
+            if(number < 0 || number >= streams.Length)
             {
-                this.Log(LogLevel.Warning, "This peripheral supports only GPIO pin #0, but pin #{0} was set", number);
+                this.Log(LogLevel.Error, "Attempted to start non-existing DMA stream number: {0}. Maximum value is {1}", number, streams.Length);
                 return;
             }
 
